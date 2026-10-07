@@ -221,7 +221,10 @@ export function seed(db, { history = true } = {}) {
     db.prepare('INSERT INTO assignments (module_id, team_id, due_date, assigned_by) VALUES (?, ?, ?, ?)')
       .run(moduleIds[0], teamIds['Mid-Market West'], addDays(today, 5), userIds['wm@pitchpulse.dev']);
 
-    if (history) seedHistory(db, userIds, moduleIds, today);
+    if (history) {
+      seedHistory(db, userIds, moduleIds, today);
+      seedDemoIntegrations(db, userIds, today);
+    }
   });
 }
 
@@ -265,6 +268,37 @@ function seedHistory(db, userIds, moduleIds, today) {
     }
     evaluateBadges(db, uid, today);
   }
+}
+
+// Demo CRM pipeline and calendar meetings so the integration features are visible before connecting real systems.
+function seedDemoIntegrations(db, userIds, today) {
+  const rand = mulberry32(7);
+  const accounts = ['Globex', 'Contoso', 'Fabrikam', 'Tailspin Toys', 'Wide World Importers', 'Litware', 'Adventure Works', 'Proseware', 'Fourth Coffee', 'Lucerne Publishing'];
+  const openStages = ['Discovery', 'Demo', 'Proposal', 'Negotiation', 'Contract Sent'];
+  // [email, win probability, deal count]
+  const reps = [['rep@pitchpulse.dev', 0.45, 8], ['sam@pitchpulse.dev', 0.62, 10], ['jordan@pitchpulse.dev', 0.25, 7], ['casey@pitchpulse.dev', 0.55, 9], ['taylor@pitchpulse.dev', 0.35, 8]];
+  let n = 0;
+  const insert = db.prepare(`INSERT INTO crm_deals (provider, external_id, user_id, owner_email, name, account, amount, stage, close_date, is_closed, is_won)
+    VALUES ('demo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  for (const [email, pWin, count] of reps) {
+    for (let i = 0; i < count; i++) {
+      const account = accounts[Math.floor(rand() * accounts.length)];
+      const closed = i < count * 0.6;
+      const won = closed && rand() < pWin;
+      const amount = Math.round((15 + rand() * 85) * 1000);
+      const close = closed ? addDays(today, -Math.ceil(rand() * 150)) : addDays(today, 3 + Math.floor(rand() * 40));
+      const stage = closed ? (won ? 'Closed Won' : 'Closed Lost') : openStages[Math.floor(rand() * openStages.length)];
+      insert.run(`demo-${++n}`, userIds[email], email, `${account} – ${['New Business', 'Expansion', 'Renewal'][i % 3]}`, account, amount, stage, close, closed ? 1 : 0, won ? 1 : 0);
+    }
+  }
+  // A hot deal + matching meetings for the main demo rep.
+  const riley = userIds['rep@pitchpulse.dev'];
+  insert.run(`demo-${++n}`, riley, 'rep@pitchpulse.dev', 'Northwind Freight – Expansion', 'Northwind Freight', 84000, 'Negotiation', addDays(today, 6), 0, 0);
+  const at = (hours) => new Date(Math.ceil(Date.now() / 1800e3) * 1800e3 + hours * 3600e3).toISOString();
+  const ev = db.prepare(`INSERT INTO calendar_events (user_id, external_id, title, start_at, end_at, attendees, external_domains, link)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+  ev.run(riley, 'demo-ev-1', 'Northwind Freight <> PitchPulse: pricing review', at(2), at(2.5), JSON.stringify(['dana@northwindfreight.com', 'morgan@pitchpulse.dev']), JSON.stringify(['northwindfreight.com']), null);
+  ev.run(riley, 'demo-ev-2', 'Intro call: Contoso operations team', at(20), at(20.5), JSON.stringify(['priya@contoso.com']), JSON.stringify(['contoso.com']), null);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

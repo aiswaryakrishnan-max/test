@@ -1,5 +1,7 @@
 // Gamification & daily-habit engine: XP, levels, streaks, badges,
 // spaced-repetition daily challenges and readiness scoring.
+import { tx } from './db.js';
+import { HttpError, bad } from './errors.js';
 
 export const DAILY_CHALLENGE_SIZE = 3;
 
@@ -201,6 +203,51 @@ export function getOrCreateDailyChallenge(db, userId, today = dayOf()) {
     row = db.prepare('SELECT * FROM daily_challenges WHERE user_id = ? AND day = ?').get(userId, today);
   }
   return { ...row, question_ids: JSON.parse(row.question_ids) };
+}
+
+export function answeredToday(db, userId, day, questionIds) {
+  const out = new Map();
+  for (const r of db.prepare('SELECT question_id, correct, choice FROM daily_answers WHERE user_id = ? AND day = ?').all(userId, day)) {
+    if (questionIds.includes(r.question_id)) out.set(r.question_id, r);
+  }
+  return out;
+}
+
+/** Record one Daily Challenge answer (web app or Google Chat) and award XP/badges. */
+export function answerDailyQuestion(db, userId, qid, choice, day = dayOf()) {
+  const challenge = getOrCreateDailyChallenge(db, userId, day);
+  if (!challenge.question_ids.includes(qid)) throw bad("That question isn't part of today's challenge");
+  const q = db.prepare('SELECT * FROM questions WHERE id = ?').get(qid);
+  if (!Number.isInteger(choice) || choice < 0 || choice >= JSON.parse(q.options).length) throw bad('Invalid choice');
+  if (answeredToday(db, userId, day, [qid]).has(qid)) throw new HttpError(409, 'Already answered');
+
+  const correct = choice === q.answer_index ? 1 : 0;
+  return tx(db, () => {
+    db.prepare('INSERT INTO answers (user_id, question_id, correct, context, day) VALUES (?, ?, ?, ?, ?)').run(userId, qid, correct, 'daily', day);
+    db.prepare('INSERT INTO daily_answers (user_id, day, question_id, choice, correct) VALUES (?, ?, ?, ?, ?)').run(userId, day, qid, choice, correct);
+    let xpGained = 0;
+    if (correct) { awardXp(db, userId, XP.dailyQuestionCorrect, 'Daily Challenge answer', day); xpGained += XP.dailyQuestionCorrect; }
+
+    const answered = answeredToday(db, userId, day, challenge.question_ids);
+    let completed = false;
+    let correctCount = null;
+    if (answered.size === challenge.question_ids.length && !challenge.completed_at) {
+      correctCount = [...answered.values()].filter((a) => a.correct).length;
+      db.prepare("UPDATE daily_challenges SET completed_at = datetime('now'), correct_count = ? WHERE user_id = ? AND day = ?").run(correctCount, userId, day);
+      awardXp(db, userId, XP.dailyComplete, 'Daily Challenge completed', day);
+      xpGained += XP.dailyComplete;
+      if (correctCount === challenge.question_ids.length) {
+        awardXp(db, userId, XP.perfectDayBonus, 'Perfect Day bonus', day);
+        xpGained += XP.perfectDayBonus;
+      }
+      completed = true;
+    }
+    const newBadges = evaluateBadges(db, userId, day);
+    return {
+      correct: !!correct, answer_index: q.answer_index, explanation: q.explanation,
+      xpGained, completed, correctCount, newBadges, streak: streakInfo(db, userId, day),
+    };
+  });
 }
 
 // ---------- Readiness ----------

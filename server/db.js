@@ -156,6 +156,93 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- ---------- Integrations ----------
+CREATE TABLE IF NOT EXISTS oauth_states (
+  state TEXT PRIMARY KEY,
+  purpose TEXT NOT NULL,          -- 'sso' | 'calendar'
+  verifier TEXT NOT NULL,         -- PKCE code_verifier
+  nonce TEXT,
+  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS crm_deals (
+  id INTEGER PRIMARY KEY,
+  provider TEXT NOT NULL,         -- 'salesforce' | 'hubspot' | 'demo'
+  external_id TEXT NOT NULL,
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  owner_email TEXT,
+  name TEXT NOT NULL,
+  account TEXT,
+  amount REAL,
+  stage TEXT,
+  close_date TEXT,
+  is_closed INTEGER NOT NULL DEFAULT 0,
+  is_won INTEGER NOT NULL DEFAULT 0,
+  synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (provider, external_id)
+);
+
+CREATE TABLE IF NOT EXISTS integration_runs (
+  id INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL,             -- 'crm_sync' | 'chat_challenge' | 'calendar_sync'
+  status TEXT NOT NULL,           -- 'ok' | 'error'
+  detail TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS calendar_connections (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL,         -- 'google'
+  refresh_token_enc TEXT NOT NULL,
+  connected_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_synced_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS calendar_events (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  external_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  start_at TEXT NOT NULL,         -- ISO 8601
+  end_at TEXT,
+  attendees TEXT NOT NULL,        -- JSON array of emails
+  external_domains TEXT NOT NULL, -- JSON array of non-company domains
+  link TEXT,
+  UNIQUE (user_id, external_id)
+);
+
+CREATE TABLE IF NOT EXISTS chat_links (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  space_name TEXT NOT NULL,       -- Google Chat DM space, e.g. spaces/AAAA
+  linked_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS roleplays (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  scenario_id INTEGER REFERENCES scenarios(id) ON DELETE SET NULL,
+  meeting_id INTEGER REFERENCES calendar_events(id) ON DELETE SET NULL,
+  title TEXT NOT NULL,
+  persona TEXT NOT NULL,
+  situation TEXT NOT NULL,
+  objective TEXT NOT NULL,
+  key_points TEXT NOT NULL,       -- JSON array
+  difficulty TEXT NOT NULL,       -- 'friendly' | 'skeptical' | 'tough'
+  transcript TEXT NOT NULL DEFAULT '[]',   -- JSON [{role: 'rep'|'buyer', text}]
+  api_messages TEXT NOT NULL DEFAULT '[]', -- JSON Messages API history, replayed verbatim
+  status TEXT NOT NULL DEFAULT 'active',   -- 'active' | 'completed'
+  source TEXT NOT NULL,           -- 'ai' | 'scripted'
+  score INTEGER,
+  feedback TEXT,
+  xp INTEGER NOT NULL DEFAULT 60,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  ended_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_deals_user ON crm_deals(user_id);
+CREATE INDEX IF NOT EXISTS idx_events_user_start ON calendar_events(user_id, start_at);
+CREATE INDEX IF NOT EXISTS idx_roleplays_user ON roleplays(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_xp_user_day ON xp_events(user_id, day);
 CREATE INDEX IF NOT EXISTS idx_answers_user ON answers(user_id, question_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read);
@@ -166,7 +253,18 @@ export function openDb(file = process.env.DB_FILE || 'data/pitchpulse.db') {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+// Additive column migrations for databases created by earlier versions.
+function migrate(db) {
+  const addColumn = (table, column, ddl) => {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  };
+  addColumn('users', 'sso_subject', 'sso_subject TEXT');           // OIDC "sub" claim
+  addColumn('users', 'last_login_at', 'last_login_at TEXT');
 }
 
 /** Run fn inside a transaction; rolls back on throw. */

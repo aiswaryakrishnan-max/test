@@ -9,6 +9,7 @@ export function hashPassword(password) {
 }
 
 export function verifyPassword(password, stored) {
+  if (!stored || !stored.includes(':')) return false; // SSO-only accounts have no password
   const [saltHex, hashHex] = stored.split(':');
   const expected = Buffer.from(hashHex, 'hex');
   const actual = scryptSync(password, Buffer.from(saltHex, 'hex'), expected.length);

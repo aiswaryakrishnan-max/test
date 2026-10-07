@@ -3,7 +3,7 @@
 // deterministic rubric so the platform works fully offline.
 import Anthropic from '@anthropic-ai/sdk';
 
-const MODEL = process.env.COACH_MODEL || 'claude-opus-5-5';
+export const MODEL = process.env.COACH_MODEL || 'claude-opus-5-5';
 
 const FEEDBACK_SCHEMA = {
   type: 'object',
@@ -27,7 +27,7 @@ Be specific and encouraging; quote the rep's own words when pointing out what to
 Scoring guide: 90+ ready for a real customer, 75-89 solid with minor gaps, 50-74 missing important elements, below 50 needs rework.`;
 
 let client = null;
-function getClient() {
+export function getClient() {
   if (!process.env.ANTHROPIC_API_KEY) return null;
   client ??= new Anthropic();
   return client;
@@ -87,7 +87,7 @@ Review this pitch.`,
 
 // ---------- Offline rubric ----------
 
-const STOPWORDS = new Set('a an the and or of to for in on with your you our we is are be by how why what that this it as at from their them they'.split(' '));
+export const STOPWORDS = new Set('a an the and or of to for in on with your you our we is are be by how why what that this it as at from their them they'.split(' '));
 
 function keywords(text) {
   return text.toLowerCase().match(/[a-z0-9%$]+/g)?.filter((w) => w.length > 2 && !STOPWORDS.has(w)) ?? [];

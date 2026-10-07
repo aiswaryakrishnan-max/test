@@ -4,26 +4,20 @@ import { fileURLToPath } from 'node:url';
 import { createSession, destroySession, parseCookies, userForToken, verifyPassword } from './auth.js';
 import { aiEnabled, scorePitch } from './coach.js';
 import {
-  BADGES, DAILY_CHALLENGE_SIZE, XP, addDays, awardXp, dayOf, daysBetween, evaluateBadges,
+  BADGES, DAILY_CHALLENGE_SIZE, XP, addDays, answerDailyQuestion, answeredToday, awardXp, dayOf, daysBetween, evaluateBadges,
   getOrCreateDailyChallenge, levelInfo, notify, readiness, streakInfo, topicAccuracy,
   totalXp, weekActivity, weekStart, xpOnDay,
 } from './engagement.js';
 import { tx } from './db.js';
+import { HttpError, bad, requireFields } from './errors.js';
+import { sessionCookie } from './http.js';
+import { config } from './integrations/config.js';
+import { dealFocus, readinessVsResults, repCrmStats } from './integrations/crm.js';
 import { sendSlack } from './reminders.js';
 
 const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
 
-class HttpError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
-}
-const bad = (msg) => new HttpError(400, msg);
-
-function requireFields(body, fields) {
-  for (const f of fields) {
-    if (body[f] === undefined || body[f] === null || body[f] === '') throw bad(`Missing field: ${f}`);
-  }
-}
 
 const dayIndex = (day) => Math.floor(new Date(`${day}T12:00:00Z`) / 864e5);
 
@@ -43,9 +37,11 @@ export function createApp(db, opts = {}) {
   route('POST', '/api/login', null, ({ body, res }) => {
     requireFields(body, ['email', 'password']);
     const user = db.prepare('SELECT * FROM users WHERE email = ?').get(String(body.email).toLowerCase().trim());
+    if (process.env.SSO_ONLY === 'true') throw new HttpError(403, 'Password sign-in is disabled. Use single sign-on.');
     if (!user || !verifyPassword(String(body.password), user.password_hash)) throw new HttpError(401, 'Invalid email or password');
     const token = createSession(db, user.id);
-    res.setHeader('Set-Cookie', `pp_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${14 * 86400}`);
+    db.prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").run(user.id);
+    res.setHeader('Set-Cookie', sessionCookie(token));
     return { ok: true };
   });
 
@@ -58,7 +54,15 @@ export function createApp(db, opts = {}) {
   route('GET', '/api/me', [], ({ user }) => {
     const xp = totalXp(db, user.id);
     const team = user.team_id ? db.prepare('SELECT name FROM teams WHERE id = ?').get(user.team_id)?.name : null;
-    return { ...user, team, level: levelInfo(xp), aiCoach: aiEnabled() };
+    return {
+      ...user, team, level: levelInfo(xp), aiCoach: aiEnabled(),
+      integrations: {
+        calendar: { enabled: config.calendar().enabled, connected: !!db.prepare('SELECT 1 FROM calendar_connections WHERE user_id = ?').get(user.id) },
+        googleChat: { enabled: config.chat().enabled, linked: !!db.prepare('SELECT 1 FROM chat_links WHERE user_id = ?').get(user.id) },
+        crm: { provider: config.crm().provider || null, hasDeals: !!db.prepare('SELECT 1 FROM crm_deals WHERE user_id = ?').get(user.id) },
+        sso: { enabled: config.sso().enabled, name: config.sso().name },
+      },
+    };
   });
 
   route('PATCH', '/api/me', [], ({ user, body }) => {
@@ -72,7 +76,7 @@ export function createApp(db, opts = {}) {
   route('GET', '/api/today', [], ({ user }) => {
     const day = today();
     const challenge = getOrCreateDailyChallenge(db, user.id, day);
-    const answered = answeredToday(user.id, day, challenge.question_ids);
+    const answered = answeredToday(db, user.id, day, challenge.question_ids);
     const questions = challenge.question_ids.map((id) => {
       const q = db.prepare('SELECT id, topic, prompt, options, answer_index, explanation FROM questions WHERE id = ?').get(id);
       if (!q) return null;
@@ -114,56 +118,14 @@ export function createApp(db, opts = {}) {
       assignments: openAssignments(user, day),
       recommended: recommended ? { ...recommended, reason: weakest ? `Boost your ${weakest.topic} accuracy (${weakest.accuracy}%)` : 'Next up in your library' } : null,
       teamPulse: teamPulse(user, day),
+      dealFocus: dealFocus(db, user.id, day),
       unread: db.prepare('SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND read = 0').get(user.id).n,
     };
   });
 
-  function answeredToday(userId, day, questionIds) {
-    const out = new Map();
-    for (const r of db.prepare('SELECT question_id, correct, choice FROM daily_answers WHERE user_id = ? AND day = ?').all(userId, day)) {
-      if (questionIds.includes(r.question_id)) out.set(r.question_id, r);
-    }
-    return out;
-  }
-
   route('POST', '/api/daily/answer', [], ({ user, body }) => {
     requireFields(body, ['questionId', 'choice']);
-    const day = today();
-    const challenge = getOrCreateDailyChallenge(db, user.id, day);
-    const qid = Number(body.questionId);
-    const choice = Number(body.choice);
-    if (!challenge.question_ids.includes(qid)) throw bad("That question isn't part of today's challenge");
-    const q = db.prepare('SELECT * FROM questions WHERE id = ?').get(qid);
-    if (!Number.isInteger(choice) || choice < 0 || choice >= JSON.parse(q.options).length) throw bad('Invalid choice');
-    if (answeredToday(user.id, day, [qid]).has(qid)) throw new HttpError(409, 'Already answered');
-
-    const correct = choice === q.answer_index ? 1 : 0;
-    return tx(db, () => {
-      db.prepare('INSERT INTO answers (user_id, question_id, correct, context, day) VALUES (?, ?, ?, ?, ?)').run(user.id, qid, correct, 'daily', day);
-      db.prepare('INSERT INTO daily_answers (user_id, day, question_id, choice, correct) VALUES (?, ?, ?, ?, ?)').run(user.id, day, qid, choice, correct);
-      let xpGained = 0;
-      if (correct) { awardXp(db, user.id, XP.dailyQuestionCorrect, 'Daily Challenge answer', day); xpGained += XP.dailyQuestionCorrect; }
-
-      const answered = answeredToday(user.id, day, challenge.question_ids);
-      let completed = false;
-      let correctCount = null;
-      if (answered.size === challenge.question_ids.length && !challenge.completed_at) {
-        correctCount = [...answered.values()].filter((a) => a.correct).length;
-        db.prepare("UPDATE daily_challenges SET completed_at = datetime('now'), correct_count = ? WHERE user_id = ? AND day = ?").run(correctCount, user.id, day);
-        awardXp(db, user.id, XP.dailyComplete, 'Daily Challenge completed', day);
-        xpGained += XP.dailyComplete;
-        if (correctCount === challenge.question_ids.length) {
-          awardXp(db, user.id, XP.perfectDayBonus, 'Perfect Day bonus', day);
-          xpGained += XP.perfectDayBonus;
-        }
-        completed = true;
-      }
-      const newBadges = evaluateBadges(db, user.id, day);
-      return {
-        correct: !!correct, answer_index: q.answer_index, explanation: q.explanation,
-        xpGained, completed, correctCount, newBadges, streak: streakInfo(db, user.id, day),
-      };
-    });
+    return answerDailyQuestion(db, user.id, Number(body.questionId), Number(body.choice), today());
   });
 
   route('POST', '/api/tips/:id/read', [], ({ user, params }) => {
@@ -381,6 +343,7 @@ export function createApp(db, opts = {}) {
         activeDays7,
         streak: streakInfo(db, id, day).current,
         readiness: readiness(db, id, day),
+        crm: repCrmStats(db, id, day),
       };
     }).sort((a, b) => (b.readiness.score ?? -1) - (a.readiness.score ?? -1));
 
@@ -408,6 +371,8 @@ export function createApp(db, opts = {}) {
       reps,
       atRisk: reps.filter((r) => r.daysInactive === null || r.daysInactive >= 2),
       focusAreas: topicAccuracy(db, ids),
+      hasCrm: !!db.prepare(`SELECT 1 FROM crm_deals WHERE user_id IN (${ids.map(() => '?').join(',') || 'NULL'}) LIMIT 1`).get(...ids),
+      readinessVsResults: readinessVsResults(db, ids, day),
       assignments: assignmentStatus,
       teams: db.prepare('SELECT id, name FROM teams ORDER BY name').all(),
     };
@@ -486,11 +451,36 @@ export function createApp(db, opts = {}) {
     return { id };
   });
 
+  route('GET', '/api/integrations/status', ['admin', 'manager'], () => {
+    const sso = config.sso();
+    const crm = config.crm();
+    const cal = config.calendar();
+    const chat = config.chat();
+    const lastRun = (kind) => db.prepare('SELECT status, detail, created_at FROM integration_runs WHERE kind = ? ORDER BY id DESC LIMIT 1').get(kind) || null;
+    const count = (sql) => db.prepare(sql).get().n;
+    return {
+      appUrl: config.appUrl(),
+      sso: { enabled: sso.enabled, name: sso.name, issuer: sso.issuer || null, ssoOnly: sso.ssoOnly, allowedDomains: sso.allowedDomains,
+        redirectUri: `${config.appUrl()}/auth/sso/callback`, ssoUsers: count('SELECT COUNT(*) AS n FROM users WHERE sso_subject IS NOT NULL') },
+      crm: { provider: crm.provider || null, syncMinutes: crm.syncMinutes, lastRun: lastRun('crm_sync'),
+        deals: count('SELECT COUNT(*) AS n FROM crm_deals'), linkedDeals: count('SELECT COUNT(*) AS n FROM crm_deals WHERE user_id IS NOT NULL') },
+      calendar: { enabled: cal.enabled, redirectUri: `${config.appUrl()}/integrations/calendar/callback`,
+        connectedUsers: count('SELECT COUNT(*) AS n FROM calendar_connections'), lastError: lastRun('calendar_sync') },
+      googleChat: { enabled: chat.enabled, canSend: !!(chat.enabled && chat.serviceAccount), hour: chat.hour,
+        endpoint: `${config.appUrl()}/integrations/google-chat`, linkedUsers: count('SELECT COUNT(*) AS n FROM chat_links'), lastRun: lastRun('chat_challenge') },
+      ai: { enabled: aiEnabled() },
+    };
+  });
+
+  // ---------- Integrations & extensions ----------
+  for (const register of opts.extensions || []) register({ db, route, today, opts });
+
   // ---------- Dispatcher ----------
   return async function handler(req, res) {
     const url = new URL(req.url, 'http://localhost');
     try {
-      if (!url.pathname.startsWith('/api/')) return await serveStatic(url.pathname, res);
+      const isRoute = /^\/(api|auth|integrations)\//.test(url.pathname);
+      if (!isRoute) return await serveStatic(url.pathname, res);
 
       const match = routes.find((r) => r.method === req.method && r.re.test(url.pathname));
       if (!match) throw new HttpError(404, 'Not found');
@@ -502,13 +492,17 @@ export function createApp(db, opts = {}) {
         if (!user) throw new HttpError(401, 'Please sign in');
         if (match.roles.length && !match.roles.includes(user.role)) throw new HttpError(403, 'Not allowed');
         if (req.method !== 'GET' && req.headers['x-requested-with'] !== 'pitchpulse') throw new HttpError(403, 'Missing CSRF header');
+      } else {
+        user = userForToken(db, token); // optional on public routes
       }
       const body = ['POST', 'PATCH', 'PUT'].includes(req.method) ? await readJson(req) : {};
       const result = await match.handler({ req, res, user, token, params, body, query: url.searchParams });
+      if (res.writableEnded) return; // handler wrote its own response (e.g. a redirect)
       send(res, 200, result);
     } catch (err) {
       const status = err.status || 500;
       if (status === 500) console.error(err);
+      if (res.headersSent) return res.end();
       send(res, status, { error: status === 500 ? 'Internal server error' : err.message });
     }
   };

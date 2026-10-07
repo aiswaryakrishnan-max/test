@@ -87,7 +87,8 @@ function markdown(md) {
 const NAV = [
   { href: '#/today', icon: '🔥', label: 'Today' },
   { href: '#/learn', icon: '📚', label: 'Learn' },
-  { href: '#/practice', icon: '🎤', label: 'Practice' },
+  { href: '#/roleplay', icon: '🎭', label: 'AI Role-play' },
+  { href: '#/practice', icon: '🎤', label: 'Pitch Practice' },
   { href: '#/leaderboard', icon: '🏆', label: 'Leaderboard' },
   { href: '#/knowledge', icon: '🗂️', label: 'Battlecards' },
   { href: '#/inbox', icon: '🔔', label: 'Inbox', badge: true },
@@ -96,6 +97,7 @@ const NAV = [
 const LEAD_NAV = [
   { href: '#/team', icon: '📊', label: 'Team' },
   { href: '#/studio', icon: '✏️', label: 'Content Studio' },
+  { href: '#/integrations', icon: '🔌', label: 'Integrations' },
 ];
 
 let unread = 0;
@@ -132,6 +134,9 @@ const ROUTES = {
   profile: viewProfile,
   team: viewTeam,
   studio: viewStudio,
+  roleplay: viewRoleplays,
+  call: viewCall,
+  integrations: viewIntegrations,
 };
 
 async function router() {
@@ -148,19 +153,26 @@ async function router() {
 }
 
 // ---------- Login ----------
-function renderLogin() {
+async function renderLogin() {
+  const cfg = await fetch('/api/auth/config').then((r) => r.json()).catch(() => ({ sso: { enabled: false }, passwordLogin: true }));
+  const ssoError = new URLSearchParams(location.search).get('sso_error');
+  if (ssoError) history.replaceState(null, '', '/');
   $('#app').innerHTML = `
     <div class="login">
       <form class="card stack" id="login-form">
         <div><div class="logo" style="padding:0">🔥 PitchPulse</div><p class="muted">Five minutes a day to sharper sales conversations.</p></div>
+        ${ssoError ? `<div class="explain" style="background:var(--bad-soft)">⚠️ ${esc(ssoError)}</div>` : ''}
+        ${cfg.sso.enabled ? `<a class="btn primary" style="width:100%" href="/auth/sso/start">🔐 Sign in with ${esc(cfg.sso.name)}</a>` : ''}
+        ${cfg.sso.enabled && cfg.passwordLogin ? '<div class="muted small" style="text-align:center">or use your password</div>' : ''}
+        ${cfg.passwordLogin ? `
         <div class="field"><label for="email">Work email</label><input id="email" type="email" required autocomplete="username" /></div>
         <div class="field"><label for="password">Password</label><input id="password" type="password" required autocomplete="current-password" /></div>
-        <button class="btn primary" style="width:100%">Sign in</button>
+        <button class="btn ${cfg.sso.enabled ? '' : 'primary'}" style="width:100%">Sign in</button>
         <div class="demo-accounts small muted">Demo accounts (password <code>password123</code>):<br>
           <button type="button" class="btn small" data-email="rep@pitchpulse.dev">Rep</button>
           <button type="button" class="btn small" data-email="manager@pitchpulse.dev">Manager</button>
           <button type="button" class="btn small" data-email="admin@pitchpulse.dev">Admin</button>
-        </div>
+        </div>` : ''}
       </form>
     </div>`;
   $$('[data-email]').forEach((b) => (b.onclick = () => { $('#email').value = b.dataset.email; $('#password').value = 'password123'; }));
@@ -179,7 +191,7 @@ async function refreshMe() {
 
 // ---------- Today ----------
 async function viewToday() {
-  const t = await api('/api/today');
+  const [t, cal] = await Promise.all([api('/api/today'), api('/api/calendar/meetings').catch(() => null)]);
   unread = t.unread;
   const goalPct = Math.min(100, Math.round((t.xpToday / t.dailyGoal) * 100));
   const s = t.streak;
@@ -205,6 +217,8 @@ async function viewToday() {
       </section>
 
       <div class="grid cols-2">
+        ${meetingsCard(cal)}
+        ${dealFocusCard(t.dealFocus)}
         <section class="card span-2" id="daily"></section>
         <section class="card">
           <div class="card-head"><h2>💡 Tip of the day</h2></div>
@@ -212,7 +226,7 @@ async function viewToday() {
         </section>
         <section class="card">
           <div class="card-head"><h2>🎤 Drill of the day</h2>${t.drill ? `<span class="pill brand">+${t.drill.xp} XP</span>` : ''}</div>
-          ${t.drill ? `<h3>${esc(t.drill.title)}</h3><p class="muted small">${esc(t.drill.objective)}</p><a class="btn primary" href="#/scenario/${t.drill.id}">Practice now →</a>` : '<p class="muted">No scenarios yet.</p>'}
+          ${t.drill ? `<h3>${esc(t.drill.title)}</h3><p class="muted small">${esc(t.drill.objective)}</p><div class="row"><button class="btn primary" data-roleplay-scenario="${t.drill.id}">🎭 Live role-play</button><a class="btn" href="#/scenario/${t.drill.id}">Write a pitch</a></div>` : '<p class="muted">No scenarios yet.</p>'}
         </section>
         <section class="card">
           <div class="card-head"><h2>📌 Assigned to you</h2></div>
@@ -229,6 +243,7 @@ async function viewToday() {
     </div>`);
 
   renderDaily(t);
+  bindRoleplayStarters();
   const tipBtn = $('#tip-read');
   if (tipBtn) tipBtn.onclick = async () => {
     const r = await api(`/api/tips/${t.tip.id}/read`, { method: 'POST' });
@@ -271,6 +286,56 @@ function renderDaily(t) {
       if (r.completed) { c.completed = true; c.correctCount = r.correctCount; }
     } catch (err) { toast(err.message, 'error'); $$('.option', el).forEach((b) => (b.disabled = false)); }
   }));
+}
+
+const fmtTime = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+const fmtWhen = (iso) => {
+  const d = new Date(iso);
+  const day = d.toDateString() === new Date().toDateString() ? 'Today' : d.toDateString() === new Date(Date.now() + 864e5).toDateString() ? 'Tomorrow' : d.toLocaleDateString(undefined, { weekday: 'short' });
+  return `${day} ${fmtTime(iso)}`;
+};
+const money = (n) => (n == null ? '—' : `$${Math.round(n).toLocaleString()}`);
+
+function meetingsCard(cal) {
+  if (!cal) return '';
+  if (!cal.meetings.length) {
+    if (cal.connected) return '';
+    if (!cal.enabled) return '';
+    return `<section class="card span-2"><div class="row"><div><h2 style="margin:0">📅 Prep for your customer meetings</h2>
+      <p class="muted small" style="margin:.3rem 0 0">Connect Google Calendar and PitchPulse will line up a prep plan and a role-play before every customer call.</p></div>
+      <span class="spacer"></span><a class="btn primary" href="/integrations/calendar/connect">Connect Google Calendar</a></div></section>`;
+  }
+  return `<section class="card span-2"><div class="card-head"><h2>📅 Upcoming customer meetings</h2>
+      ${cal.connected ? '<span class="pill good">Google Calendar</span>' : '<span class="pill">Demo data</span>'}</div>
+    <ul class="list">${cal.meetings.map((m) => `<li style="align-items:flex-start">
+      <div style="min-width:92px"><b>${esc(fmtWhen(m.start))}</b><div class="muted tiny">${esc(m.domains.join(', '))}</div></div>
+      <div style="flex:1"><b>${esc(m.title)}</b>
+        ${m.deal ? `<div class="small muted">💼 ${esc(m.deal.name)} · <span class="pill brand">${esc(m.deal.stage)}</span> ${money(m.deal.amount)}${m.deal.close_date ? ` · closes ${fmtDate(m.deal.close_date)}` : ''}</div>` : '<div class="small muted">No matching CRM deal</div>'}
+      </div>
+      <div class="row" style="flex-wrap:nowrap"><button class="btn small primary" data-roleplay-meeting="${m.id}">🎭 Rehearse</button><a class="btn small" href="#/knowledge">Battlecards</a></div>
+    </li>`).join('')}</ul>
+    ${cal.syncError ? `<p class="small" style="color:var(--bad)">Calendar sync issue: ${esc(cal.syncError)}</p>` : ''}</section>`;
+}
+
+function dealFocusCard(f) {
+  if (!f) return '';
+  const d = f.deal;
+  return `<section class="card span-2"><div class="card-head"><h2>💼 Deal focus: ${esc(f.headline)}</h2><span class="pill ${d.daysToClose <= 7 ? 'warn' : ''}">Closes in ${d.daysToClose}d</span></div>
+    <p style="margin-top:0"><b>${esc(d.name)}</b> is in <b>${esc(d.stage)}</b>${d.amount ? ` (${money(d.amount)})` : ''}. Sharpen your <b>${esc(f.topic)}</b> skills before your next conversation.</p>
+    <div class="row">${f.module ? `<a class="btn" href="#/module/${f.module.id}">📚 ${esc(f.module.title)}</a>` : ''}<a class="btn" href="#/roleplay">🎭 Role-play this stage</a></div></section>`;
+}
+
+function bindRoleplayStarters(root = document) {
+  $$('[data-roleplay-meeting]', root).forEach((b) => (b.onclick = () => startRoleplay({ meetingId: Number(b.dataset.roleplayMeeting) }, b)));
+  $$('[data-roleplay-scenario]', root).forEach((b) => (b.onclick = () => startRoleplay({ scenarioId: Number(b.dataset.roleplayScenario), difficulty: b.dataset.difficulty || $('#difficulty')?.value }, b)));
+}
+
+async function startRoleplay(body, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Connecting…'; }
+  try {
+    const rp = await api('/api/roleplays', { method: 'POST', body });
+    location.hash = `#/call/${rp.id}`;
+  } catch (err) { toast(err.message, 'error'); if (btn) { btn.disabled = false; btn.textContent = 'Try again'; } }
 }
 
 // ---------- Learn ----------
@@ -488,8 +553,11 @@ async function viewInbox() {
 
 // ---------- Profile ----------
 async function viewProfile() {
-  const p = await api('/api/profile');
+  const [p, crm] = await Promise.all([api('/api/profile'), api('/api/crm/deals')]);
   const r = p.readiness;
+  const ig = me.integrations;
+  const qs = new URLSearchParams(location.hash.split('?')[1] || '');
+  if (qs.get('calendar_error')) toast(qs.get('calendar_error'), 'error');
   shell(`
     <div class="page-head"><div><h1>${esc(me.name)}</h1><p>${esc(me.team || '')} · Level ${p.level.level} · ${p.level.totalXp} XP total</p></div></div>
     <div class="grid cols-4">
@@ -511,10 +579,30 @@ async function viewProfile() {
         <h3 style="margin-top:1.3rem">Recent XP</h3>
         <ul class="list small">${p.recentXp.map((x) => `<li><span class="pill brand">+${x.amount}</span>${esc(x.reason)}<span class="spacer"></span><span class="muted tiny">${fmtDate(x.day)}</span></li>`).join('') || '<li class="muted">No XP yet.</li>'}</ul>
       </section>
+      <section class="card"><div class="card-head"><h2>🔌 Connected apps</h2></div>
+        <ul class="list">
+          <li><span style="font-size:1.4rem">📅</span><div style="flex:1"><b>Google Calendar</b><div class="muted tiny">Prep plans and role-plays for upcoming customer meetings</div></div>
+            ${!ig.calendar.enabled ? '<span class="pill">Not set up by admin</span>'
+              : ig.calendar.connected ? '<span class="pill good">Connected</span><button class="btn small" id="cal-disconnect">Disconnect</button>'
+              : '<a class="btn small primary" href="/integrations/calendar/connect">Connect</a>'}</li>
+          <li><span style="font-size:1.4rem">💬</span><div style="flex:1"><b>Google Chat</b><div class="muted tiny">${ig.googleChat.linked ? 'Your Daily Challenge arrives in Chat every morning' : 'Find the <b>PitchPulse</b> app in Google Chat and send it a message to get your Daily Challenge there'}</div></div>
+            ${!ig.googleChat.enabled ? '<span class="pill">Not set up by admin</span>' : ig.googleChat.linked ? '<span class="pill good">Linked</span>' : '<span class="pill warn">Not linked</span>'}</li>
+          <li><span style="font-size:1.4rem">💼</span><div style="flex:1"><b>CRM</b><div class="muted tiny">${ig.crm.provider ? `Synced from ${esc(ig.crm.provider)}` : ig.crm.hasDeals ? 'Demo pipeline data' : 'Your pipeline personalises recommendations'}</div></div>
+            ${ig.crm.hasDeals ? '<span class="pill good">Deals linked</span>' : '<span class="pill">No deals</span>'}</li>
+        </ul>
+      </section>
+      <section class="card"><div class="card-head"><h2>💼 My pipeline</h2><span class="muted small">last 180 days</span></div>
+        <div class="grid cols-2" style="gap:.6rem">
+          <div><div class="muted tiny">Open pipeline</div><b style="font-size:1.3rem">${money(crm.stats.pipeline)}</b><div class="muted tiny">${crm.stats.openDeals} open deals</div></div>
+          <div><div class="muted tiny">Win rate</div><b style="font-size:1.3rem">${pct(crm.stats.winRate)}</b><div class="muted tiny">${crm.stats.won} won · ${money(crm.stats.wonAmount)}</div></div>
+        </div>
+        ${crm.deals.filter((d) => !d.is_closed).length ? `<ul class="list small" style="margin-top:.6rem">${crm.deals.filter((d) => !d.is_closed).slice(0, 5).map((d) => `<li><div style="flex:1"><b>${esc(d.name)}</b><div class="muted tiny">${esc(d.stage)} · closes ${d.close_date ? fmtDate(d.close_date) : '—'}</div></div>${money(d.amount)}</li>`).join('')}</ul>` : ''}
+      </section>
       <section class="card span-2"><div class="card-head"><h2>Badges</h2></div>
         <div class="badges">${p.badges.map((b) => `<div class="badge ${b.earned ? '' : 'locked'}" title="${esc(b.description)}"><div class="icon">${b.icon}</div><b>${esc(b.name)}</b><div class="muted tiny">${esc(b.description)}</div></div>`).join('')}</div>
       </section>
     </div>`);
+  if ($('#cal-disconnect')) $('#cal-disconnect').onclick = async () => { await api('/api/calendar/disconnect', { method: 'POST' }); toast('Calendar disconnected'); viewProfile(); };
   $$('[data-goal]').forEach((b) => (b.onclick = async () => {
     await api('/api/me', { method: 'PATCH', body: { daily_goal_xp: Number(b.dataset.goal) } });
     toast('Daily goal updated');
@@ -542,12 +630,12 @@ async function viewTeam() {
     </div>
 
     <section class="card table-wrap" style="margin-top:1rem"><div class="card-head"><h2>Reps</h2></div>
-      <table><thead><tr><th>Rep</th><th>Readiness</th><th>Knowledge</th><th>Modules</th><th>Pitch</th><th>Streak</th><th>Active (7d)</th><th>Week XP</th><th></th></tr></thead>
+      <table><thead><tr><th>Rep</th><th>Readiness</th><th>Knowledge</th><th>Modules</th><th>Pitch</th><th>Streak</th><th>Active (7d)</th><th>Week XP</th>${d.hasCrm ? '<th>Win rate</th><th>Pipeline</th>' : ''}<th></th></tr></thead>
       <tbody>${d.reps.map((r) => `<tr>
         <td><div class="row">${avatar(r.name, r.id)}<div><b>${esc(r.name)}</b><div class="muted tiny">${r.lastActive ? (r.daysInactive === 0 ? 'Active today' : `Last active ${r.daysInactive}d ago`) : 'Never active'}</div></div></div></td>
         <td style="min-width:110px"><b>${r.readiness.score ?? '—'}</b>${bar(r.readiness.score)}</td>
         <td>${pct(r.readiness.knowledge)}</td><td>${pct(r.readiness.completion)}</td><td>${r.readiness.pitch ?? '—'}</td>
-        <td>${r.streak ? `<span class="pill fire">🔥 ${r.streak}</span>` : '—'}</td><td>${r.activeDays7}/7</td><td>${r.weekXp}</td>
+        <td>${r.streak ? `<span class="pill fire">🔥 ${r.streak}</span>` : '—'}</td><td>${r.activeDays7}/7</td><td>${r.weekXp}</td>${d.hasCrm ? `<td>${pct(r.crm.winRate)}</td><td>${money(r.crm.pipeline)}</td>` : ''}
         <td><div class="row" style="flex-wrap:nowrap"><button class="btn small" data-nudge="${r.id}" title="Send a reminder">👋 Nudge</button><button class="btn small" data-kudos="${r.id}" data-name="${esc(r.name)}" title="Recognise effort (+10 XP)">🎉 Kudos</button></div></td>
       </tr>`).join('')}</tbody></table></section>
 
@@ -556,6 +644,10 @@ async function viewTeam() {
         ${d.atRisk.length ? `<ul class="list">${d.atRisk.map((r) => `<li>${avatar(r.name, r.id)}<div><b>${esc(r.name)}</b><div class="muted tiny">${r.lastActive ? `${r.daysInactive} days inactive` : 'Never started'}</div></div><span class="spacer"></span><button class="btn small" data-nudge="${r.id}">👋 Nudge</button></li>`).join('')}</ul>
           <button class="btn small" id="nudge-all" style="margin-top:.6rem">Nudge all ${d.atRisk.length}</button>` : '<p class="muted">Everyone is engaged. 🙌</p>'}
       </section>
+      ${d.readinessVsResults ? `<section class="card span-2"><div class="card-head"><h2>📈 Readiness vs. results</h2><span class="muted small">CRM win rate, last 180 days</span></div>
+        <div class="grid cols-2"><div><div class="muted small">Top-half readiness reps</div><div class="tile"><div class="num">${d.readinessVsResults.topHalfWinRate}%</div><div class="label">average win rate</div></div></div>
+        <div><div class="muted small">Bottom-half readiness reps</div><div class="tile"><div class="num">${d.readinessVsResults.bottomHalfWinRate}%</div><div class="label">average win rate</div></div></div></div>
+        <p class="muted small">${d.readinessVsResults.topHalfWinRate > d.readinessVsResults.bottomHalfWinRate ? `Reps who train more are winning ${d.readinessVsResults.topHalfWinRate - d.readinessVsResults.bottomHalfWinRate} points more often.` : 'No positive gap yet. Keep an eye on this as more data comes in.'} This is a correlation across ${d.readinessVsResults.reps} reps, not proof of cause.</p></section>` : ''}
       <section class="card"><div class="card-head"><h2>🎯 Focus areas</h2><span class="muted small">Team accuracy by topic</span></div>
         ${d.focusAreas.length ? d.focusAreas.map((t) => `<div style="margin-bottom:.7rem"><div class="row small"><span>${esc(t.topic)}</span><span class="spacer"></span><b>${t.accuracy}%</b></div>${bar(t.accuracy)}</div>`).join('') : '<p class="muted">No answers yet.</p>'}
         ${d.focusAreas[0] && d.focusAreas[0].accuracy < 75 ? `<p class="small explain">💡 Consider assigning a <b>${esc(d.focusAreas[0].topic)}</b> module this week.</p>` : ''}
@@ -669,6 +761,211 @@ async function viewStudio() {
       toast('Published ✅');
       viewStudio();
     } catch (err) { toast(err.message, 'error'); }
+  };
+}
+
+// ---------- AI Role-play ----------
+async function viewRoleplays() {
+  const [scenarios, history, cal] = await Promise.all([api('/api/scenarios'), api('/api/roleplays'), api('/api/calendar/meetings').catch(() => null)]);
+  shell(`
+    <div class="page-head"><div><h1>🎭 AI Role-play</h1><p>Practise a live call with a realistic buyer${me.aiCoach ? ' played by AI' : ''}. Talk or type, then get a scorecard on your discovery, objection handling and close.</p></div>
+      <div><label for="difficulty">Buyer difficulty</label><select id="difficulty" style="min-width:200px">
+        <option value="friendly">😊 Friendly: open and forthcoming</option><option value="skeptical" selected>🤨 Skeptical: make them trust you</option><option value="tough">😤 Tough: busy and pushes back</option></select></div></div>
+    ${cal && cal.meetings.length ? `<section class="card" style="margin-bottom:1rem"><div class="card-head"><h2>📅 Rehearse a real meeting</h2></div>
+      <ul class="list">${cal.meetings.map((m) => `<li><div style="flex:1"><b>${esc(m.title)}</b><div class="muted tiny">${esc(fmtWhen(m.start))}${m.deal ? ` · ${esc(m.deal.stage)}` : ''}</div></div><button class="btn small primary" data-roleplay-meeting="${m.id}">🎭 Rehearse</button></li>`).join('')}</ul></section>` : ''}
+    <div class="grid cols-3">
+      ${scenarios.map((s) => `<div class="card module-card" style="cursor:default">
+        <span class="pill brand" style="align-self:flex-start">+60 XP</span>
+        <h3>${esc(s.title)}</h3><p class="muted small" style="margin:0">${esc(s.persona)}</p>
+        <p class="small" style="margin:.2rem 0"><b>Goal:</b> ${esc(s.objective)}</p>
+        <button class="btn primary" style="margin-top:auto" data-roleplay-scenario="${s.id}">Start call 📞</button></div>`).join('')}
+    </div>
+    <section class="card" style="margin-top:1rem"><div class="card-head"><h2>Your recent calls</h2></div>
+      ${history.length ? `<ul class="list">${history.map((h) => `<li><span class="pill ${h.score == null ? '' : tone(h.score)}" style="min-width:3rem;justify-content:center">${h.score ?? '…'}</span>
+        <div style="flex:1"><a href="#/call/${h.id}"><b>${esc(h.title)}</b></a><div class="muted tiny">${esc(h.difficulty)} buyer · ${fmtDate(h.created_at)} · ${h.status === 'active' ? 'in progress' : 'completed'}</div></div></li>`).join('')}</ul>`
+        : '<p class="muted">No calls yet. Pick a scenario above.</p>'}
+    </section>`);
+  bindRoleplayStarters();
+}
+
+let speakBuyer = localStorage.getItem('pp_voice') === '1';
+function speak(text) {
+  if (!speakBuyer || !window.speechSynthesis) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.rate = 1.03;
+  speechSynthesis.speak(u);
+}
+
+async function viewCall(id) {
+  const rp = await api(`/api/roleplays/${id}`);
+  if (rp.status === 'completed') return renderScorecard(rp);
+  const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const repTurns = () => rp.transcript.filter((t) => t.role === 'rep').length;
+  shell(`
+    <div class="page-head"><div><a href="#/roleplay" class="small">← All role-plays</a><h1>📞 ${esc(rp.title)}</h1>
+      <p><span class="pill">${esc(rp.difficulty)} buyer</span> ${rp.source === 'ai' ? '<span class="pill brand">AI buyer</span>' : '<span class="pill">Scripted buyer</span>'} · Goal: ${esc(rp.objective)}</p></div>
+      <div class="row">${window.speechSynthesis ? `<label class="row small" style="margin:0;font-weight:500"><input type="checkbox" id="voice" ${speakBuyer ? 'checked' : ''}/> 🔊 Buyer speaks aloud</label>` : ''}
+        <button class="btn" id="end">End call &amp; get scorecard</button></div></div>
+    <div class="grid cols-2">
+      <section class="card call">
+        <div id="thread" class="thread"></div>
+        <form id="say" class="row" style="margin-top:.8rem;flex-wrap:nowrap">
+          ${SpeechRec ? '<button type="button" class="btn" id="mic" title="Hold a conversation by voice">🎙️</button>' : ''}
+          <input type="text" id="line" placeholder="Say something to ${esc(rp.buyerName)}…" autocomplete="off" style="flex:1" />
+          <button class="btn primary" id="send">Send</button>
+        </form>
+        <div class="muted tiny" style="margin-top:.4rem" id="turns"></div>
+      </section>
+      <section class="card stack">
+        <div class="persona"><b>👤 Buyer:</b> ${esc(rp.persona)}</div>
+        <div class="persona"><b>📍 Situation:</b> ${esc(rp.situation)}</div>
+        <details><summary class="small muted" style="cursor:pointer">What the scorecard looks for</summary>
+          <ul class="small">${rp.key_points.map((k) => `<li>${esc(k)}</li>`).join('')}</ul></details>
+        <div class="explain small">💡 Real calls are conversations: ask questions, listen, then link value to what you hear. Aim to talk less than 60% of the time and finish with a concrete next step.</div>
+      </section>
+    </div>`);
+
+  const thread = $('#thread');
+  const bubble = (t) => `<div class="bubble ${t.role}"><div class="who">${t.role === 'rep' ? 'You' : esc(rp.buyerName)}</div>${esc(t.text)}</div>`;
+  const render = () => {
+    thread.innerHTML = rp.transcript.map(bubble).join('');
+    thread.scrollTop = thread.scrollHeight;
+    $('#turns').textContent = `${repTurns()}/${rp.maxTurns} turns`;
+  };
+  render();
+  if (rp.transcript.length === 1) speak(rp.transcript[0].text);
+
+  if ($('#voice')) $('#voice').onchange = (e) => { speakBuyer = e.target.checked; localStorage.setItem('pp_voice', speakBuyer ? '1' : '0'); if (!speakBuyer) speechSynthesis.cancel(); };
+  const endCall = async () => {
+    $('#end').disabled = true; $('#end').textContent = 'Scoring your call…';
+    try {
+      const done = await api(`/api/roleplays/${id}/end`, { method: 'POST' });
+      celebrate({ ...done, completed: done.score >= 80 });
+      renderScorecard(done);
+    } catch (err) { toast(err.message, 'error'); $('#end').disabled = false; $('#end').textContent = 'End call & get scorecard'; }
+  };
+  $('#end').onclick = endCall;
+
+  $('#say').onsubmit = async (e) => {
+    e.preventDefault();
+    const text = $('#line').value.trim();
+    if (!text) return;
+    $('#line').value = '';
+    $('#send').disabled = true;
+    rp.transcript.push({ role: 'rep', text });
+    render();
+    thread.insertAdjacentHTML('beforeend', `<div class="bubble buyer typing"><div class="who">${esc(rp.buyerName)}</div>…</div>`);
+    thread.scrollTop = thread.scrollHeight;
+    try {
+      const r = await api(`/api/roleplays/${id}/message`, { method: 'POST', body: { text } });
+      rp.transcript.push({ role: 'buyer', text: r.reply });
+      render();
+      speak(r.reply);
+      if (r.ended) {
+        toast(`${rp.buyerName} has wrapped up the call`);
+        $('#line').disabled = true;
+        $('#end').classList.add('primary');
+      }
+    } catch (err) {
+      rp.transcript.pop(); render(); $('#line').value = text; toast(err.message, 'error');
+    } finally { $('#send').disabled = false; $('#line').focus(); }
+  };
+
+  if (SpeechRec) {
+    let rec = null;
+    $('#mic').onclick = () => {
+      if (rec) { rec.stop(); return; }
+      speechSynthesis?.cancel();
+      rec = new SpeechRec();
+      rec.lang = navigator.language || 'en-US';
+      rec.interimResults = true;
+      rec.onresult = (ev) => { $('#line').value = [...ev.results].map((x) => x[0].transcript).join(' '); };
+      rec.onend = () => { rec = null; $('#mic').innerHTML = '🎙️'; if ($('#line').value.trim()) $('#say').requestSubmit(); };
+      rec.onerror = (ev) => toast(`Mic: ${ev.error}`, 'error');
+      rec.start();
+      $('#mic').innerHTML = '<span class="rec">●</span>';
+    };
+  }
+  $('#line').focus();
+}
+
+function renderScorecard(rp) {
+  const f = rp.feedback;
+  const list = (items) => (items?.length ? `<ul>${items.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>` : '<p class="muted small">—</p>');
+  shell(`
+    <div class="page-head"><div><a href="#/roleplay" class="small">← All role-plays</a><h1>📋 Scorecard: ${esc(rp.title)}</h1>
+      <p><span class="pill">${esc(rp.difficulty)} buyer</span> ${f.source === 'ai' ? '<span class="pill brand">Graded by AI coach</span>' : '<span class="pill">Rubric grading</span>'}</p></div>
+      <div class="row"><button class="btn primary" id="again">🔁 Run it again</button></div></div>
+    <div class="grid cols-2">
+      <section class="card">
+        <div class="row"><div class="feedback-score" style="color:var(--${tone(rp.score) || 'text'})">${rp.score}</div><div><b>/ 100</b></div><span class="spacer"></span>
+          <div style="text-align:right"><div class="muted tiny">You talked</div><b class="${f.talk_ratio > 60 ? '' : ''}">${f.talk_ratio}%</b> <span class="muted tiny">of the call ${f.talk_ratio > 60 ? '(aim < 60%)' : '👍'}</span></div></div>
+        ${bar(rp.score)}
+        <p>${esc(f.summary)}</p>
+        ${Object.entries(f.skills).map(([k, v]) => `<div style="margin-bottom:.7rem"><div class="row small"><b>${esc(f.skill_labels?.[k] || k)}</b><span class="spacer"></span>${v.score}/10</div>${bar(v.score * 10)}<div class="muted tiny" style="margin-top:.2rem">${esc(v.comment)}</div></div>`).join('')}
+      </section>
+      <section class="card stack">
+        <div class="kv"><div><h3>💪 Strengths</h3>${list(f.strengths)}</div><div><h3>🛠 Improve</h3>${list(f.improvements)}</div></div>
+        <div class="kv"><div><h3 class="small">✅ Key points hit</h3>${list(f.key_points_covered)}</div><div><h3 class="small">⚠️ Key points missed</h3>${list(f.key_points_missed)}</div></div>
+        ${f.best_moment ? `<div class="explain"><b>⭐ Best moment:</b> “${esc(f.best_moment)}”</div>` : ''}
+        ${f.missed_opportunity ? `<div class="explain"><b>🎯 Missed opportunity:</b> ${esc(f.missed_opportunity)}${f.better_line ? `<br><b>Try:</b> ${esc(f.better_line)}` : ''}</div>` : ''}
+      </section>
+      <section class="card span-2"><div class="card-head"><h2>Transcript</h2></div>
+        <div class="thread" style="max-height:none">${rp.transcript.map((t) => `<div class="bubble ${t.role}"><div class="who">${t.role === 'rep' ? 'You' : esc(rp.buyerName)}</div>${esc(t.text)}</div>`).join('')}</div>
+      </section>
+    </div>`);
+  $('#again').onclick = () => (location.hash = '#/roleplay');
+}
+
+// ---------- Admin: Integrations ----------
+async function viewIntegrations() {
+  const st = await api('/api/integrations/status');
+  const pill = (on, onText = 'Connected', offText = 'Not configured') => `<span class="pill ${on ? 'good' : ''}">${on ? onText : offText}</span>`;
+  const code = (v) => `<code style="word-break:break-all">${esc(v)}</code>`;
+  const run = (r) => (r ? `<div class="small ${r.status === 'error' ? '' : 'muted'}" style="${r.status === 'error' ? 'color:var(--bad)' : ''}">Last run ${esc(r.created_at)} UTC: ${esc(r.detail)}</div>` : '<div class="muted small">No runs yet.</div>');
+  const isAdmin = me.role === 'admin';
+  shell(`
+    <div class="page-head"><div><h1>🔌 Integrations</h1><p>Connect PitchPulse to the tools your team already uses. Configured with environment variables; see the README for step-by-step setup.</p></div></div>
+    <div class="grid cols-2">
+      <section class="card stack"><div class="card-head"><h2>🔐 Single sign-on</h2>${pill(st.sso.enabled, st.sso.name)}</div>
+        <p class="small muted" style="margin:0">OpenID Connect: Google Workspace, Okta, Microsoft Entra ID and others. New users are created on first sign-in as reps.</p>
+        <div class="small">Redirect URI: ${code(st.sso.redirectUri)}</div>
+        ${st.sso.enabled ? `<div class="small">Issuer: ${code(st.sso.issuer)}<br>Allowed domains: ${st.sso.allowedDomains.length ? esc(st.sso.allowedDomains.join(', ')) : 'any'} · Password login: ${st.sso.ssoOnly ? 'disabled' : 'enabled'} · ${st.sso.ssoUsers} SSO users</div>` : '<div class="small muted">Set <code>OIDC_ISSUER</code>, <code>OIDC_CLIENT_ID</code>, <code>OIDC_CLIENT_SECRET</code>.</div>'}
+      </section>
+      <section class="card stack"><div class="card-head"><h2>💼 CRM sync</h2>${pill(!!st.crm.provider, st.crm.provider || '')}</div>
+        <p class="small muted" style="margin:0">Read-only sync of opportunities from Salesforce or HubSpot, matched to reps by email. Powers win-rate vs readiness and deal-stage coaching.</p>
+        <div class="small">${st.crm.deals} deals stored · ${st.crm.linkedDeals} linked to reps${st.crm.provider ? ` · auto-sync every ${st.crm.syncMinutes} min` : ''}</div>
+        ${run(st.crm.lastRun)}
+        ${st.crm.provider ? (isAdmin ? '<button class="btn small" id="crm-sync" style="align-self:flex-start">🔄 Sync now</button>' : '') : '<div class="small muted">Set <code>CRM_PROVIDER</code> to <code>salesforce</code> or <code>hubspot</code> plus credentials. Showing demo pipeline data until then.</div>'}
+      </section>
+      <section class="card stack"><div class="card-head"><h2>📅 Google Calendar</h2>${pill(st.calendar.enabled, 'Available to reps')}</div>
+        <p class="small muted" style="margin:0">Each rep connects their own calendar (read-only). Upcoming customer meetings get a prep card and a one-click role-play.</p>
+        <div class="small">Redirect URI: ${code(st.calendar.redirectUri)}</div>
+        <div class="small">${st.calendar.connectedUsers} reps connected</div>
+        ${st.calendar.enabled ? '' : '<div class="small muted">Set <code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code>.</div>'}
+      </section>
+      <section class="card stack"><div class="card-head"><h2>💬 Google Chat</h2>${pill(st.googleChat.enabled, st.googleChat.canSend ? 'Live' : 'Receiving only')}</div>
+        <p class="small muted" style="margin:0">Reps take the Daily Challenge with interactive cards in a Chat DM. The app sends it every morning at ${st.googleChat.hour}:00.</p>
+        <div class="small">Endpoint URL: ${code(st.googleChat.endpoint)}</div>
+        <div class="small">${st.googleChat.linkedUsers} reps linked</div>
+        ${run(st.googleChat.lastRun)}
+        ${st.googleChat.canSend && isAdmin ? '<button class="btn small" id="chat-send" style="align-self:flex-start">📨 Send today\'s challenge now</button>' : ''}
+        ${st.googleChat.enabled ? '' : '<div class="small muted">Set <code>GOOGLE_CHAT_AUDIENCE</code> and <code>GOOGLE_CHAT_SERVICE_ACCOUNT</code>.</div>'}
+      </section>
+      <section class="card stack"><div class="card-head"><h2>🧠 AI coach &amp; role-play buyer</h2>${pill(st.ai.enabled, 'Claude')}</div>
+        <p class="small muted" style="margin:0">${st.ai.enabled ? 'Pitch feedback, role-play buyers and scorecards use Claude.' : 'Using the scripted buyer and rubric scoring. Set <code>ANTHROPIC_API_KEY</code> for AI buyers and coaching.'}</p>
+      </section>
+    </div>`);
+  if ($('#crm-sync')) $('#crm-sync').onclick = async (e) => {
+    e.target.disabled = true; e.target.textContent = 'Syncing…';
+    try { const r = await api('/api/integrations/crm/sync', { method: 'POST' }); toast(r.detail); } catch (err) { toast(err.message, 'error'); }
+    viewIntegrations();
+  };
+  if ($('#chat-send')) $('#chat-send').onclick = async (e) => {
+    e.target.disabled = true;
+    try { const r = await api('/api/integrations/google-chat/send', { method: 'POST' }); toast(`Sent ${r.sent}, failed ${r.failed}`); } catch (err) { toast(err.message, 'error'); }
+    viewIntegrations();
   };
 }
 

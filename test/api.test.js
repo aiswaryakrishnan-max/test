@@ -226,3 +226,57 @@ test('levels and week boundaries', () => {
   assert.equal(weekStart('2026-10-05'), '2026-10-05');
   assert.equal(weekStart('2026-10-11'), '2026-10-05'); // Sunday
 });
+
+test('role-play works offline with the scripted buyer and rubric scorecard', async () => {
+  const { extensions } = await import('../server/extensions.js');
+  const d = openDb(':memory:');
+  seed(d, { history: false });
+  const srv = createServer(createApp(d, { extensions }));
+  await new Promise((r) => srv.listen(0, r));
+  const url = `http://127.0.0.1:${srv.address().port}`;
+  try {
+    const login = await fetch(`${url}/api/login`, { method: 'POST', body: JSON.stringify({ email: 'rep@pitchpulse.dev', password: DEMO_PASSWORD }) });
+    const cookie = login.headers.get('set-cookie').split(';')[0];
+    const call = async (path, body) => (await fetch(url + path, {
+      method: body ? 'POST' : 'GET', headers: { Cookie: cookie, 'X-Requested-With': 'pitchpulse', 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    })).json();
+    const rp = await call('/api/roleplays', { scenarioId: 2, difficulty: 'skeptical' });
+    assert.equal(rp.source, 'scripted');
+    assert.match(rp.transcript[0].text, /Marcus/);
+    const early = await call(`/api/roleplays/${rp.id}/message`, { text: "Let's book a meeting next week." });
+    assert.equal(early.ended, false, 'buyer should not agree to a next step before any discovery');
+    await call(`/api/roleplays/${rp.id}/message`, { text: 'I understand the budget concern. What is procurement comparing us against?' });
+    await call(`/api/roleplays/${rp.id}/message`, { text: 'What happens if the reporting delays continue another quarter?' });
+    const close = await call(`/api/roleplays/${rp.id}/message`, { text: 'If you can commit to a two-year term, can we schedule a call with procurement on Thursday as a next step?' });
+    assert.equal(close.ended, true);
+    const end = await call(`/api/roleplays/${rp.id}/end`, {});
+    assert.equal(end.status, 'completed');
+    assert.equal(end.feedback.source, 'rubric');
+    assert.ok(end.feedback.skills.discovery.score >= 5);
+    assert.equal(end.feedback.skills.next_steps.score, 9);
+    assert.ok(end.xpGained > 0);
+  } finally { srv.close(); }
+});
+
+test('JWT key loader understands x509 certificate maps (Google Chat project-number mode)', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const { mkdtempSync, readFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { fetchKeys, signJwt, verifyJwt } = await import('../server/integrations/jwt.js');
+  const dir = mkdtempSync(join(tmpdir(), 'pp-x509-'));
+  try {
+    execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', join(dir, 'k.pem'), '-out', join(dir, 'c.pem'), '-days', '1', '-subj', '/CN=chat'], { stdio: 'ignore' });
+  } catch { return; } // openssl not installed: skip
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ kid1: readFileSync(join(dir, 'c.pem'), 'utf8') }));
+  try {
+    const keys = await fetchKeys('https://certs.test/x509', { force: true });
+    assert.ok(keys.has('kid1'));
+    const now = Math.floor(Date.now() / 1000);
+    const tok = signJwt({ iss: 'chat@system.gserviceaccount.com', aud: '42', exp: now + 60 }, readFileSync(join(dir, 'k.pem'), 'utf8'), 'kid1');
+    const claims = await verifyJwt(tok, { keysUrl: 'https://certs.test/x509', issuers: ['chat@system.gserviceaccount.com'], audience: '42' });
+    assert.equal(claims.aud, '42');
+  } finally { globalThis.fetch = realFetch; }
+});
