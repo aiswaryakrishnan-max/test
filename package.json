@@ -1,0 +1,17 @@
+{
+  "name": "pitchpulse",
+  "version": "0.1.0",
+  "description": "Daily sales readiness & enablement platform: daily challenges, streaks, learning paths, AI pitch coaching, leaderboards and manager insights.",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=22.5" },
+  "scripts": {
+    "start": "node --no-warnings server/index.js",
+    "dev": "node --no-warnings --watch server/index.js",
+    "seed": "node --no-warnings server/seed.js --reset",
+    "test": "node --no-warnings --test test/*.test.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0"
+  }
+}
