@@ -2,7 +2,6 @@
 //  - Interaction endpoint: POST /integrations/google-chat (configure as an HTTP endpoint Chat app).
 //  - Every morning the app DMs each linked rep today's challenge as an interactive card.
 //  - Answers go through the same engine as the web app, so XP, streaks and badges stay in sync.
-import { readFileSync } from 'node:fs';
 import { HttpError } from '../errors.js';
 import {
   DAILY_CHALLENGE_SIZE, answerDailyQuestion, answeredToday, dayOf, getOrCreateDailyChallenge,
@@ -10,8 +9,8 @@ import {
 } from '../engagement.js';
 import { config } from './config.js';
 import { logRun } from './crm.js';
-import { signJwt, verifyJwt } from './jwt.js';
-import { tokenRequest } from './oauth.js';
+import { parseServiceAccount, serviceAccountToken } from './google.js';
+import { verifyJwt } from './jwt.js';
 
 const CHAT_ISSUER = 'chat@system.gserviceaccount.com';
 const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'];
@@ -173,23 +172,9 @@ export function handleChatEvent(db, event, day = dayOf()) {
 
 // ---------- Proactive messages (service account) ----------
 
-let cachedToken = null;
-
-function serviceAccount() {
-  const raw = config.chat().serviceAccount;
-  if (!raw) throw new HttpError(400, 'GOOGLE_CHAT_SERVICE_ACCOUNT is not set (JSON key contents or file path)');
-  return JSON.parse(raw.startsWith('{') ? raw : readFileSync(raw, 'utf8'));
-}
-
 async function chatAccessToken() {
-  if (cachedToken && cachedToken.exp > Date.now() + 60e3) return cachedToken.token;
-  const sa = serviceAccount();
-  const tokenUrl = config.chat().tokenUrl;
-  const now = Math.floor(Date.now() / 1000);
-  const assertion = signJwt({ iss: sa.client_email, scope: 'https://www.googleapis.com/auth/chat.bot', aud: tokenUrl, iat: now, exp: now + 3600 }, sa.private_key, sa.private_key_id);
-  const tok = await tokenRequest(tokenUrl, { grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion });
-  cachedToken = { token: tok.access_token, exp: Date.now() + (tok.expires_in || 3600) * 1000 };
-  return cachedToken.token;
+  const cfg = config.chat();
+  return serviceAccountToken(parseServiceAccount(cfg.serviceAccount, 'GOOGLE_CHAT_SERVICE_ACCOUNT'), 'https://www.googleapis.com/auth/chat.bot', cfg.tokenUrl);
 }
 
 export async function sendChatMessage(spaceName, message) {

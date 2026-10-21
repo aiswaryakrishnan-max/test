@@ -4,5 +4,6 @@ import { registerSso } from './integrations/sso.js';
 import { registerCrm } from './integrations/crm.js';
 import { registerCalendar } from './integrations/calendar.js';
 import { registerGoogleChat } from './integrations/googlechat.js';
+import { registerDigest } from './integrations/digest.js';
 
-export const extensions = [registerSso, registerCrm, registerCalendar, registerGoogleChat, registerRoleplays];
+export const extensions = [registerSso, registerCrm, registerCalendar, registerGoogleChat, registerDigest, registerRoleplays];

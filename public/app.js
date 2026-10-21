@@ -953,6 +953,15 @@ async function viewIntegrations() {
         ${st.googleChat.canSend && isAdmin ? '<button class="btn small" id="chat-send" style="align-self:flex-start">📨 Send today\'s challenge now</button>' : ''}
         ${st.googleChat.enabled ? '' : '<div class="small muted">Set <code>GOOGLE_CHAT_AUDIENCE</code> and <code>GOOGLE_CHAT_SERVICE_ACCOUNT</code>.</div>'}
       </section>
+      <section class="card stack"><div class="card-head"><h2>📚 Weekly GTM digest</h2>${pill(st.digest.enabled, st.digest.delivery === 'webhook' ? 'Chat webhook' : 'Chat space')}</div>
+        <p class="small muted" style="margin:0">Every ${['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][st.digest.day] || 'Monday'} at ${st.digest.hour}:00, 3-5 short lessons from the week's Gong calls, Drive updates and web news are posted to your team's Chat space. Its quiz questions join the Daily Challenge.</p>
+        <div class="small">Sources: ${pill(st.digest.gong, 'Gong', 'Gong off')} ${pill(st.digest.drive, `Drive (${st.digest.driveFolders} folders)`, 'Drive off')} ${pill(st.digest.web, 'Web', 'Web off')} · ${st.digest.sent} sent</div>
+        ${st.digest.web ? `<div class="small muted">Web topics: ${esc(st.digest.webTopics.join('; '))}</div>` : ''}
+        ${run(st.digest.lastRun)}
+        ${isAdmin ? '<div class="row" style="gap:8px"><button class="btn small" id="digest-preview">👀 Preview this week</button>' + (st.digest.enabled ? '<button class="btn small primary" id="digest-send">📨 Send now</button>' : '') + '</div>' : ''}
+        ${st.digest.enabled ? '' : '<div class="small muted">Set <code>GOOGLE_CHAT_DIGEST_WEBHOOK</code> (or <code>GOOGLE_CHAT_DIGEST_SPACE</code>) plus at least one source: <code>GONG_ACCESS_KEY</code>, <code>GOOGLE_DRIVE_FOLDER_IDS</code> or <code>DIGEST_WEB_TOPICS</code>.</div>'}
+        <div id="digest-out" class="stack"></div>
+      </section>
       <section class="card stack"><div class="card-head"><h2>🧠 AI coach &amp; role-play buyer</h2>${pill(st.ai.enabled, 'Claude')}</div>
         <p class="small muted" style="margin:0">${st.ai.enabled ? 'Pitch feedback, role-play buyers and scorecards use Claude.' : 'Using the scripted buyer and rubric scoring. Set <code>ANTHROPIC_API_KEY</code> for AI buyers and coaching.'}</p>
       </section>
@@ -960,6 +969,25 @@ async function viewIntegrations() {
   if ($('#crm-sync')) $('#crm-sync').onclick = async (e) => {
     e.target.disabled = true; e.target.textContent = 'Syncing…';
     try { const r = await api('/api/integrations/crm/sync', { method: 'POST' }); toast(r.detail); } catch (err) { toast(err.message, 'error'); }
+    viewIntegrations();
+  };
+  const showDigest = (d) => {
+    $('#digest-out').innerHTML = `<div class="small"><b>${esc(d.content.headline)}</b> · ${esc(d.week)} · ${esc(d.status)}${d.sources.errors.length ? ` · <span style="color:var(--bad)">${esc(d.sources.errors.join('; '))}</span>` : ''}</div>
+      ${d.content.items.map((it) => `<div class="small"><b>${esc(it.title)}</b><br>${esc(it.takeaway)}${it.try_this ? `<br><i>Try this: ${esc(it.try_this)}</i>` : ''}</div>`).join('')}
+      ${d.content.quiz.map((q) => `<div class="small muted">🧠 ${esc(q.prompt)}</div>`).join('')}`;
+  };
+  if ($('#digest-preview')) $('#digest-preview').onclick = async (e) => {
+    e.target.disabled = true; e.target.textContent = 'Building… (up to a minute)';
+    try { showDigest(await api('/api/digests/preview', { method: 'POST' })); toast('Draft saved. "Send now" posts this version.'); } catch (err) { toast(err.message, 'error'); }
+    e.target.disabled = false; e.target.textContent = '👀 Preview this week';
+  };
+  if ($('#digest-send')) $('#digest-send').onclick = async (e) => {
+    e.target.disabled = true;
+    try {
+      let r = await api('/api/digests/send', { method: 'POST', body: {} });
+      if (r.skipped && confirm(`This week's digest was already sent. Send it again?`)) r = await api('/api/digests/send', { method: 'POST', body: { force: true } });
+      if (!r.skipped) toast('Digest posted to Google Chat');
+    } catch (err) { toast(err.message, 'error'); }
     viewIntegrations();
   };
   if ($('#chat-send')) $('#chat-send').onclick = async (e) => {

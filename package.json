@@ -9,6 +9,7 @@
     "start": "node --no-warnings server/index.js",
     "dev": "node --no-warnings --watch server/index.js",
     "seed": "node --no-warnings server/seed.js --reset",
+    "digest": "node --no-warnings server/digest-cli.js",
     "test": "node --no-warnings --test test/*.test.js"
   },
   "dependencies": {

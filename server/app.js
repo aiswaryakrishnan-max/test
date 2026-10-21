@@ -468,6 +468,12 @@ export function createApp(db, opts = {}) {
         connectedUsers: count('SELECT COUNT(*) AS n FROM calendar_connections'), lastError: lastRun('calendar_sync') },
       googleChat: { enabled: chat.enabled, canSend: !!(chat.enabled && chat.serviceAccount), hour: chat.hour,
         endpoint: `${config.appUrl()}/integrations/google-chat`, linkedUsers: count('SELECT COUNT(*) AS n FROM chat_links'), lastRun: lastRun('chat_challenge') },
+      digest: (() => {
+        const d = config.digest();
+        return { enabled: d.enabled, delivery: d.webhookUrl ? 'webhook' : d.space ? 'space' : null, day: d.day, hour: d.hour,
+          gong: d.gong.enabled, drive: d.drive.enabled, driveFolders: d.drive.folderIds.length, web: d.web.enabled, webTopics: d.web.topics,
+          lastRun: lastRun('weekly_digest'), sent: count("SELECT COUNT(*) AS n FROM digests WHERE status = 'sent'") };
+      })(),
       ai: { enabled: aiEnabled() },
     };
   });

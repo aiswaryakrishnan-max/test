@@ -185,7 +185,7 @@ CREATE TABLE IF NOT EXISTS crm_deals (
 
 CREATE TABLE IF NOT EXISTS integration_runs (
   id INTEGER PRIMARY KEY,
-  kind TEXT NOT NULL,             -- 'crm_sync' | 'chat_challenge' | 'calendar_sync'
+  kind TEXT NOT NULL,             -- 'crm_sync' | 'chat_challenge' | 'calendar_sync' | 'weekly_digest'
   status TEXT NOT NULL,           -- 'ok' | 'error'
   detail TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -238,6 +238,18 @@ CREATE TABLE IF NOT EXISTS roleplays (
   xp INTEGER NOT NULL DEFAULT 60,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   ended_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS digests (
+  id INTEGER PRIMARY KEY,
+  week TEXT NOT NULL UNIQUE,      -- Monday of the digest's week
+  status TEXT NOT NULL,           -- 'draft' | 'sent'
+  source TEXT NOT NULL,           -- 'ai' | 'basic'
+  content TEXT NOT NULL,          -- JSON digest (headline, items, quiz)
+  sources TEXT NOT NULL,          -- JSON {gong, drive, web, errors}
+  question_ids TEXT NOT NULL DEFAULT '[]', -- quiz questions added to the Daily Challenge pool
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  sent_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_deals_user ON crm_deals(user_id);
