@@ -97,6 +97,7 @@ const NAV = [
 const LEAD_NAV = [
   { href: '#/team', icon: '📊', label: 'Team' },
   { href: '#/studio', icon: '✏️', label: 'Content Studio' },
+  { href: '#/digest', icon: '📚', label: 'Daily digest' },
   { href: '#/integrations', icon: '🔌', label: 'Integrations' },
 ];
 
@@ -137,6 +138,8 @@ const ROUTES = {
   roleplay: viewRoleplays,
   call: viewCall,
   integrations: viewIntegrations,
+  digest: viewDigest,
+  'open-digest': (id) => { location.href = `/digest/${Number(id)}`; },
 };
 
 async function router() {
@@ -187,6 +190,8 @@ async function renderLogin() {
 
 async function refreshMe() {
   me = await api('/api/me');
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (tz && me.timezone !== tz) api('/api/me/timezone', { method: 'PUT', body: { timezone: tz } }).then(() => { me.timezone = tz; }).catch(() => {});
 }
 
 // ---------- Today ----------
@@ -953,14 +958,12 @@ async function viewIntegrations() {
         ${st.googleChat.canSend && isAdmin ? '<button class="btn small" id="chat-send" style="align-self:flex-start">📨 Send today\'s challenge now</button>' : ''}
         ${st.googleChat.enabled ? '' : '<div class="small muted">Set <code>GOOGLE_CHAT_AUDIENCE</code> and <code>GOOGLE_CHAT_SERVICE_ACCOUNT</code>.</div>'}
       </section>
-      <section class="card stack"><div class="card-head"><h2>📚 Weekly GTM digest</h2>${pill(st.digest.enabled, st.digest.delivery === 'webhook' ? 'Chat webhook' : 'Chat space')}</div>
-        <p class="small muted" style="margin:0">Every ${['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][st.digest.day] || 'Monday'} at ${st.digest.hour}:00, 3-5 short lessons from the week's Gong calls, Drive updates and web news are posted to your team's Chat space. Its quiz questions join the Daily Challenge.</p>
-        <div class="small">Sources: ${pill(st.digest.gong, 'Gong', 'Gong off')} ${pill(st.digest.drive, `Drive (${st.digest.driveFolders} folders)`, 'Drive off')} ${pill(st.digest.web, 'Web', 'Web off')} · ${st.digest.sent} sent</div>
-        ${st.digest.web ? `<div class="small muted">Web topics: ${esc(st.digest.webTopics.join('; '))}</div>` : ''}
-        ${run(st.digest.lastRun)}
-        ${isAdmin ? '<div class="row" style="gap:8px"><button class="btn small" id="digest-preview">👀 Preview this week</button>' + (st.digest.enabled ? '<button class="btn small primary" id="digest-send">📨 Send now</button>' : '') + '</div>' : ''}
-        ${st.digest.enabled ? '' : '<div class="small muted">Set <code>GOOGLE_CHAT_DIGEST_WEBHOOK</code> (or <code>GOOGLE_CHAT_DIGEST_SPACE</code>) plus at least one source: <code>GONG_ACCESS_KEY</code>, <code>GOOGLE_DRIVE_FOLDER_IDS</code> or <code>DIGEST_WEB_TOPICS</code>.</div>'}
-        <div id="digest-out" class="stack"></div>
+      <section class="card stack"><div class="card-head"><h2>📚 Daily GTM digest</h2>${pill(st.digest.canDeliver, 'Chat DMs', 'Needs the Chat app')}</div>
+        <p class="small muted" style="margin:0">One two-minute card a day, Mon to Fri at ${esc(st.digest.sendTime)} in each rep's time zone. Planned Wednesday, drafted by Claude on Thursday, reviewed Friday, queued Sunday night.</p>
+        <div class="small">Sources: ${pill(st.digest.drive, 'Approved Drive library', 'Drive off')} ${pill(st.digest.gong, 'Gong', 'Gong off')} ${pill(st.digest.crmReasons, 'Win/loss fields', 'Win/loss fields off')} ${pill(st.digest.web, 'Web', 'Web off')} ${pill(st.digest.ai, 'Claude', 'Claude off')}</div>
+        <div class="small muted">Approval: ${st.digest.approval === 'all' ? 'every card (pilot)' : 'competitor and win/loss cards; others spot-checked'}${st.digest.pilot ? ` · pilot of ${st.digest.pilot} reps` : ''}${st.digest.mirror ? ' · mirrored to a team space' : ''}</div>
+        ${st.digest.lastRuns.map(run).join('')}
+        <a class="btn small" href="#/digest" style="align-self:flex-start">Open the review screen</a>
       </section>
       <section class="card stack"><div class="card-head"><h2>🧠 AI coach &amp; role-play buyer</h2>${pill(st.ai.enabled, 'Claude')}</div>
         <p class="small muted" style="margin:0">${st.ai.enabled ? 'Pitch feedback, role-play buyers and scorecards use Claude.' : 'Using the scripted buyer and rubric scoring. Set <code>ANTHROPIC_API_KEY</code> for AI buyers and coaching.'}</p>
@@ -971,30 +974,135 @@ async function viewIntegrations() {
     try { const r = await api('/api/integrations/crm/sync', { method: 'POST' }); toast(r.detail); } catch (err) { toast(err.message, 'error'); }
     viewIntegrations();
   };
-  const showDigest = (d) => {
-    $('#digest-out').innerHTML = `<div class="small"><b>${esc(d.content.headline)}</b> · ${esc(d.week)} · ${esc(d.status)}${d.sources.errors.length ? ` · <span style="color:var(--bad)">${esc(d.sources.errors.join('; '))}</span>` : ''}</div>
-      ${d.content.items.map((it) => `<div class="small"><b>${esc(it.title)}</b><br>${esc(it.takeaway)}${it.try_this ? `<br><i>Try this: ${esc(it.try_this)}</i>` : ''}</div>`).join('')}
-      ${d.content.quiz.map((q) => `<div class="small muted">🧠 ${esc(q.prompt)}</div>`).join('')}`;
-  };
-  if ($('#digest-preview')) $('#digest-preview').onclick = async (e) => {
-    e.target.disabled = true; e.target.textContent = 'Building… (up to a minute)';
-    try { showDigest(await api('/api/digests/preview', { method: 'POST' })); toast('Draft saved. "Send now" posts this version.'); } catch (err) { toast(err.message, 'error'); }
-    e.target.disabled = false; e.target.textContent = '👀 Preview this week';
-  };
-  if ($('#digest-send')) $('#digest-send').onclick = async (e) => {
-    e.target.disabled = true;
-    try {
-      let r = await api('/api/digests/send', { method: 'POST', body: {} });
-      if (r.skipped && confirm(`This week's digest was already sent. Send it again?`)) r = await api('/api/digests/send', { method: 'POST', body: { force: true } });
-      if (!r.skipped) toast('Digest posted to Google Chat');
-    } catch (err) { toast(err.message, 'error'); }
-    viewIntegrations();
-  };
   if ($('#chat-send')) $('#chat-send').onclick = async (e) => {
     e.target.disabled = true;
     try { const r = await api('/api/integrations/google-chat/send', { method: 'POST' }); toast(`Sent ${r.sent}, failed ${r.failed}`); } catch (err) { toast(err.message, 'error'); }
     viewIntegrations();
   };
+}
+
+// ---------- Manager/admin: Daily digest review ----------
+const DIGEST_DAYS = { mon: ['Monday', 'Speak the language'], tue: ['Tuesday', 'Know the buyer'], wed: ['Wednesday', 'Win the room'], thu: ['Thursday', 'See it in use'], fri: ['Friday', 'Learn from the field'] };
+const STATUS_PILL = { draft: 'warn', approved: 'good', queued: 'good', rejected: 'bad', fallback: 'bad' };
+
+async function viewDigest(id) {
+  const isAdmin = me.role === 'admin';
+  const list = await api('/api/digest/weeks');
+  const weekId = Number(id) || list.weeks[0]?.id;
+  if (!weekId) {
+    shell(`<div class="page-head"><div><h1>📚 Daily digest</h1><p>Nothing planned yet. The plan for next week is built automatically on Wednesday.</p></div>
+      ${isAdmin ? '<button class="btn primary" id="plan">Plan next week now</button>' : ''}</div>`);
+    if ($('#plan')) $('#plan').onclick = async () => { try { const w = await api('/api/digest/weeks', { method: 'POST', body: {} }); location.hash = `#/digest/${w.id}`; } catch (err) { toast(err.message, 'error'); } };
+    return;
+  }
+  const w = await api(`/api/digest/weeks/${weekId}`);
+  const p = w.plan;
+  const sel = (name, options, value) => `<select name="${name}" ${isAdmin ? '' : 'disabled'}>${[...new Set([value, ...options])].filter(Boolean).map((o) => `<option ${o === value ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+  const m = w.metrics;
+  const pct = (v) => (v == null ? '–' : `${v}%`);
+  const issueList = (c) => c.issues.length ? `<ul class="small" style="margin:.3rem 0 0;padding-left:1.1rem">${c.issues.map((i) => `<li>${i.level === 'error' ? '⛔' : '⚠️'} <code>${esc(i.path)}</code> ${esc(i.message)}</li>`).join('')}</ul>` : '<div class="small muted">Validators passed.</div>';
+  const cardRow = (c) => {
+    const [name, theme] = DIGEST_DAYS[c.day];
+    const content = c.content.replaced_draft || c.content;
+    return `<section class="card stack" data-card="${c.id}">
+      <div class="card-head"><h3 style="margin:0">${name} · <span class="muted">${theme}</span></h3>
+        <span class="pill ${STATUS_PILL[c.status] || ''}">${esc(c.status)}</span>${c.sensitive ? '<span class="pill warn">needs human approval</span>' : ''}${c.hasImage ? '<span class="pill">image</span>' : ''}</div>
+      <div><b>${esc(content.headline)}</b></div>
+      <div class="small">${(content.body_points || []).map((b) => esc(b.text)).join('<br>')}</div>
+      ${content.say_it ? `<div class="small"><i>Say it: “${esc(content.say_it)}”</i></div>` : ''}
+      ${issueList(c)}
+      <div class="row" style="gap:6px;flex-wrap:wrap">
+        ${['approved', 'queued'].includes(c.status) ? '' : '<button class="btn small primary" data-act="approve">Approve</button>'}
+        <button class="btn small" data-act="reject">Reject</button>
+        ${isAdmin ? '<button class="btn small" data-act="regen">Regenerate</button><button class="btn small" data-act="edit">Edit</button>' : ''}
+        <button class="btn small ghost" data-act="test">Send test to me</button>
+        <a class="btn small ghost" href="/digest/${w.id}?preview=1#${c.day}" target="_blank">Preview</a>
+      </div>
+      <div class="editor" hidden><textarea style="min-height:320px;font-family:monospace;font-size:12px">${esc(JSON.stringify(content, null, 2))}</textarea>
+        <div class="row" style="gap:6px"><button class="btn small primary" data-act="save">Save and re-validate</button></div></div>
+    </section>`;
+  };
+  shell(`
+    <div class="page-head"><div><h1>📚 Daily digest</h1><p>Week of ${esc(w.week)} · <span class="pill ${w.status === 'queued' ? 'good' : 'warn'}">${esc(w.status)}</span></p></div>
+      <div class="row" style="gap:8px">
+        <select id="week">${list.weeks.map((x) => `<option value="${x.id}" ${x.id === w.id ? 'selected' : ''}>Week of ${esc(x.week)} (${esc(x.status)})</option>`).join('')}</select>
+        ${isAdmin ? `${list.weeks.some((x) => x.week === list.upcoming) ? '' : '<button class="btn small" id="plan">Plan next week</button>'}
+          <button class="btn small primary" id="draft">${w.cards.length ? 'Redraft all days' : 'Draft all days'}</button>
+          <button class="btn small" id="queue">Queue now</button>` : ''}
+        <a class="btn small ghost" href="/digest/${w.id}?preview=1" target="_blank">Open full preview</a>
+      </div></div>
+    <div class="grid cols-2">
+      <form class="card stack" id="plan-form"><div class="card-head"><h2>Topic plan</h2><span class="muted small">Wednesday</span></div>
+        <div class="field"><label>Monday focus (market or congress)</label><input type="text" name="focus" value="${esc(p.focus)}" placeholder="e.g. ESMO 2026, oncology" ${isAdmin ? '' : 'disabled'} /></div>
+        <div class="field"><label>Tuesday persona</label>${sel('persona', p.candidates.personas, p.persona)}</div>
+        <div class="field"><label>Wednesday objection</label><input type="text" name="objection" value="${esc(p.objection)}" ${isAdmin ? '' : 'disabled'} /><div class="tiny muted">${esc(p.objectionReason)}</div></div>
+        <div class="field"><label>Wednesday competitor</label>${sel('competitor', p.candidates.competitors, p.competitor)}<div class="tiny muted">${esc(p.competitorReason)}</div></div>
+        <div class="field"><label>Thursday use case</label>${sel('useCase', p.candidates.useCases, p.useCase)}</div>
+        <div class="field"><label>Notes for the writer</label><textarea name="notes" style="min-height:60px" ${isAdmin ? '' : 'disabled'}>${esc(p.notes)}</textarea></div>
+        ${p.candidates.objections.length ? `<div class="tiny muted">Gong trackers this week vs last: ${p.candidates.objections.concat(p.candidates.competitorMentions).filter((t) => t.current || t.previous).map((t) => `${esc(t.name)} ${t.current} (${t.previous})`).join(' · ')}</div>` : ''}
+        ${isAdmin ? '<div class="row"><span class="spacer"></span><button class="btn small primary">Save plan</button></div>' : ''}
+      </form>
+      <section class="card stack"><div class="card-head"><h2>Is it working?</h2><span class="muted small">${m.recipients} recipients</span></div>
+        <table class="table small"><thead><tr><th>Day</th><th>Sent</th><th>Engaged</th><th>Full card</th><th>Quiz</th><th>👍/👎</th></tr></thead>
+          <tbody>${m.days.map((d) => `<tr><td>${DIGEST_DAYS[d.day][0].slice(0, 3)}</td><td>${d.delivered}</td><td>${d.engaged}</td><td>${d.views}</td><td>${d.quizUsers} · ${pct(d.quizScore)}</td><td>${d.useful}/${d.notUseful}</td></tr>`).join('')}</tbody></table>
+        <div class="small">Recall score: first time ${pct(m.retention.firstTime.score)} · after 1 week ${pct(m.retention.oneWeek.score)} (${m.retention.oneWeek.answers}) · after 4 weeks ${pct(m.retention.fourWeeks.score)} (${m.retention.fourWeeks.answers})</div>
+        <div class="small">Challenge replies: ${m.challenge.replies} from ${m.challenge.users} reps (${pct(m.challenge.share)})</div>
+        ${m.challenge.latest.map((r) => `<div class="small muted">“${esc(r.text)}” · ${esc(r.name)}</div>`).join('')}
+        ${w.challenge ? `<div class="small"><b>This week's challenge:</b> ${esc(w.challenge)}</div>` : ''}
+      </section>
+    </div>
+    <h2 style="margin-top:1.4rem">Cards</h2>
+    <div class="stack">${w.cards.map(cardRow).join('') || '<p class="muted">No cards yet. Claude drafts them on Thursday, or click "Draft all days".</p>'}</div>
+    <h2 style="margin-top:1.4rem">Clip of the week</h2>
+    <div class="grid cols-2">
+      <form class="card stack" id="clip-form"><p class="small muted" style="margin:0">Nominate a 30 to 60 second Gong clip. Only manager-approved clips can appear on Friday. Check that call-recording consent covers internal training use.</p>
+        <div class="field"><label>Gong link (with timestamp)</label><input type="text" name="url" required placeholder="https://app.gong.io/call?id=…" /></div>
+        <div class="field"><label>Title</label><input type="text" name="title" required /></div>
+        <div class="field"><label>Why it works</label><input type="text" name="why_it_works" required /></div>
+        <div class="field"><label>Scorecard skill</label><input type="text" name="skill" required placeholder="Discovery, Objection handling…" /></div>
+        <div class="row"><span class="spacer"></span><button class="btn small">Nominate</button></div></form>
+      <section class="card stack" id="clips"></section>
+    </div>`);
+
+  $('#week').onchange = (e) => (location.hash = `#/digest/${e.target.value}`);
+  const run = async (btn, label, fn) => {
+    const old = btn.textContent; btn.disabled = true; btn.textContent = label;
+    try { await fn(); viewDigest(w.id); } catch (err) { toast(err.message, 'error'); btn.disabled = false; btn.textContent = old; }
+  };
+  if ($('#plan')) $('#plan').onclick = (e) => run(e.target, 'Planning…', async () => { const n = await api('/api/digest/weeks', { method: 'POST', body: {} }); location.hash = `#/digest/${n.id}`; });
+  if ($('#draft')) $('#draft').onclick = (e) => run(e.target, 'Drafting (a few minutes)…', () => api(`/api/digest/weeks/${w.id}/draft`, { method: 'POST', body: {} }));
+  if ($('#queue')) $('#queue').onclick = (e) => confirm('Queue now? Days that are not approved will get a short fallback card.') && run(e.target, 'Queueing…', () => api(`/api/digest/weeks/${w.id}/queue`, { method: 'POST' }));
+  $('#plan-form').onsubmit = async (e) => {
+    e.preventDefault();
+    try { await api(`/api/digest/weeks/${w.id}/plan`, { method: 'PATCH', body: Object.fromEntries(new FormData(e.target)) }); toast('Plan saved'); } catch (err) { toast(err.message, 'error'); }
+  };
+  $$('[data-card]').forEach((el) => {
+    const cid = el.dataset.card;
+    const day = w.cards.find((c) => String(c.id) === cid).day;
+    el.querySelectorAll('[data-act]').forEach((b) => (b.onclick = () => {
+      const act = b.dataset.act;
+      if (act === 'approve') run(b, 'Approving…', () => api(`/api/digest/cards/${cid}/approve`, { method: 'POST' }));
+      if (act === 'reject') run(b, 'Rejecting…', () => api(`/api/digest/cards/${cid}/reject`, { method: 'POST' }));
+      if (act === 'regen') run(b, 'Regenerating…', () => api(`/api/digest/weeks/${w.id}/draft`, { method: 'POST', body: { day } }));
+      if (act === 'test') api(`/api/digest/cards/${cid}/test`, { method: 'POST' }).then(() => toast('Sent to your Chat DM')).catch((err) => toast(err.message, 'error'));
+      if (act === 'edit') el.querySelector('.editor').hidden = !el.querySelector('.editor').hidden;
+      if (act === 'save') {
+        let content;
+        try { content = JSON.parse(el.querySelector('textarea').value); } catch { return toast('That is not valid JSON', 'error'); }
+        run(b, 'Saving…', () => api(`/api/digest/cards/${cid}`, { method: 'PUT', body: { content } }));
+      }
+    }));
+  });
+  $('#clip-form').onsubmit = async (e) => {
+    e.preventDefault();
+    try { await api('/api/digest/clips', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); toast('Clip nominated'); viewDigest(w.id); } catch (err) { toast(err.message, 'error'); }
+  };
+  const clips = await api('/api/digest/clips');
+  $('#clips').innerHTML = clips.length ? clips.map((c) => `<div class="row" style="gap:8px;align-items:flex-start"><div style="flex:1"><a href="${esc(c.url)}" target="_blank" rel="noopener"><b>${esc(c.title)}</b></a>
+      <div class="small muted">${esc(c.skill)} · ${esc(c.why_it_works)} · nominated by ${esc(c.nominated_by_name)}${c.used_week_id ? ' · used' : ''}</div></div>
+      ${c.approved_by ? `<span class="pill good">approved by ${esc(c.approved_by_name)}</span>` : `<button class="btn small" data-clip="${c.id}">Approve</button>`}</div>`).join('')
+    : '<p class="small muted">No clips nominated yet.</p>';
+  $$('[data-clip]').forEach((b) => (b.onclick = () => run(b, 'Approving…', () => api(`/api/digest/clips/${b.dataset.clip}/approve`, { method: 'POST' }))));
 }
 
 // ---------- Boot ----------

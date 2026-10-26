@@ -11,6 +11,7 @@ import { config } from './config.js';
 import { logRun } from './crm.js';
 import { parseServiceAccount, serviceAccountToken } from './google.js';
 import { verifyJwt } from './jwt.js';
+import { handleDigestEvent } from '../digest/chat.js';
 
 const CHAT_ISSUER = 'chat@system.gserviceaccount.com';
 const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'];
@@ -118,7 +119,7 @@ function leaderboardText(db, day) {
   return `🏆 *This week's leaderboard*\n${rows.map((r, i) => `${['🥇', '🥈', '🥉', '4.', '5.'][i]} ${r.name}: ${r.xp} XP`).join('\n')}`;
 }
 
-const HELP = 'Hi! I bring your PitchPulse Daily Challenge into Chat. Try:\n• *challenge*: today\'s questions\n• *streak*: your streak & XP\n• *leaderboard*: this week\'s top reps\n• *help*: this message';
+const HELP = 'Hi! I bring your PitchPulse Daily Challenge and the daily GTM digest into Chat. Try:\n• *quiz*: today\'s questions\n• *challenge: …*: tell me what a customer said when you used this week\'s term or question\n• *streak*: your streak & XP\n• *leaderboard*: this week\'s top reps\n• *help*: this message';
 
 export function handleChatEvent(db, event, day = dayOf()) {
   const email = String(event.user?.email || '').toLowerCase();
@@ -136,6 +137,9 @@ export function handleChatEvent(db, event, day = dayOf()) {
     db.prepare(`INSERT INTO chat_links (user_id, space_name) VALUES (?, ?)
       ON CONFLICT (user_id) DO UPDATE SET space_name = excluded.space_name`).run(user.id, event.space.name);
   }
+
+  const digest = handleDigestEvent(db, event, user); // daily digest clicks and challenge replies
+  if (digest) return digest;
 
   switch (event.type) {
     case 'ADDED_TO_SPACE':

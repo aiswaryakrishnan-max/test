@@ -27,6 +27,15 @@ export const config = {
     salesforceClientId: env('SALESFORCE_CLIENT_ID'),
     salesforceClientSecret: env('SALESFORCE_CLIENT_SECRET'),
     salesforceApiVersion: env('SALESFORCE_API_VERSION', 'v61.0'),
+    // Win/loss fields for the Friday digest: API names of the deal fields in your CRM.
+    // HubSpot has closed_won_reason / closed_lost_reason built in; everything else is usually custom.
+    fields: {
+      wonReason: env('CRM_WON_REASON_FIELD', env('CRM_PROVIDER').toLowerCase() === 'hubspot' ? 'closed_won_reason' : ''),
+      lostReason: env('CRM_LOST_REASON_FIELD', env('CRM_PROVIDER').toLowerCase() === 'hubspot' ? 'closed_lost_reason' : ''),
+      competitor: env('CRM_COMPETITOR_FIELD'),
+      segment: env('CRM_SEGMENT_FIELD'),
+      useCase: env('CRM_USE_CASE_FIELD'),
+    },
   }),
 
   calendar: () => ({
@@ -47,34 +56,40 @@ export const config = {
     get enabled() { return !!this.audience; },
   }),
 
+  // Daily GTM digest. Rotation lists and trackers are semicolon-separated; defaults are in server/digest/defaults.js.
   digest: () => ({
-    day: Number(env('DIGEST_DAY', '1')),                         // 1 = Monday … 7 = Sunday
-    hour: Number(env('DIGEST_HOUR', '9')),
-    lookbackDays: Number(env('DIGEST_LOOKBACK_DAYS', '7')) || 7,
-    audience: env('DIGEST_AUDIENCE', 'the GTM team: AEs, SDRs, CSMs and sales engineers'),
-    webhookUrl: env('GOOGLE_CHAT_DIGEST_WEBHOOK'),               // incoming webhook of the GTM space
-    space: env('GOOGLE_CHAT_DIGEST_SPACE'),                      // or spaces/XXXX, posted by the PitchPulse Chat app
+    sendTime: env('DIGEST_SEND_TIME', '08:30'),                 // each rep's local time, Mon-Fri
+    approval: env('DIGEST_APPROVAL', 'all') === 'sensitive' ? 'sensitive' : 'all', // 'all' during the pilot
+    pilotEmails: list('DIGEST_PILOT_EMAILS'),                   // empty = every rep linked in Chat
+    webhookUrl: env('GOOGLE_CHAT_DIGEST_WEBHOOK'),               // optional: also post each day to a team space
+    renderImages: env('DIGEST_RENDER_IMAGES', 'true') !== 'false',
+    personas: rawList('DIGEST_PERSONAS', ';'),
+    competitors: rawList('DIGEST_COMPETITORS', ';'),
+    useCases: rawList('DIGEST_USE_CASES', ';'),
+    referenceCustomers: list('DIGEST_REFERENCE_CUSTOMERS'),     // customers approved to be named
+    minDealsForWeek: Number(env('DIGEST_MIN_CLOSED_DEALS', '3')) || 3,
     gong: {
       base: env('GONG_API_BASE', 'https://api.gong.io').replace(/\/$/, ''),
       accessKey: env('GONG_ACCESS_KEY'),
       secret: env('GONG_ACCESS_KEY_SECRET'),
       workspaceId: env('GONG_WORKSPACE_ID'),
-      maxCalls: Number(env('GONG_MAX_CALLS', '25')) || 25,
+      maxCalls: Number(env('GONG_MAX_CALLS', '200')) || 200,
+      objectionTrackers: rawList('GONG_OBJECTION_TRACKERS', ';'),
+      competitorTrackers: rawList('GONG_COMPETITOR_TRACKERS', ';'),
       get enabled() { return !!(this.accessKey && this.secret); },
     },
     drive: {
-      folderIds: rawList('GOOGLE_DRIVE_FOLDER_IDS'),
+      approvedFolderId: env('GOOGLE_DRIVE_APPROVED_FOLDER_ID'),
       serviceAccount: env('GOOGLE_DRIVE_SERVICE_ACCOUNT') || env('GOOGLE_CHAT_SERVICE_ACCOUNT'),
       apiBase: env('GOOGLE_DRIVE_API', 'https://www.googleapis.com/drive/v3'),
       tokenUrl: env('GOOGLE_TOKEN_URL', 'https://oauth2.googleapis.com/token'),
-      maxFiles: Number(env('GOOGLE_DRIVE_MAX_FILES', '10')) || 10,
-      get enabled() { return !!(this.folderIds.length && this.serviceAccount); },
+      maxReviewAgeDays: Number(env('DIGEST_SOURCE_MAX_AGE_DAYS', '180')) || 180,
+      get enabled() { return !!(this.approvedFolderId && this.serviceAccount); },
     },
     web: {
-      topics: rawList('DIGEST_WEB_TOPICS', ';'),                 // e.g. "Competitor X pricing; AI in sales enablement"
-      allowedDomains: list('DIGEST_WEB_DOMAINS'),
-      get enabled() { return this.topics.length > 0; },
+      domains: list('DIGEST_WEB_DOMAINS'),                       // human-picked news sources (required for web search)
+      pages: rawList('DIGEST_WEB_PAGES'),                         // pages read every week, e.g. your what's-new page
+      get enabled() { return this.domains.length > 0 || this.pages.length > 0; },
     },
-    get enabled() { return !!(this.webhookUrl || this.space); },
   }),
 };

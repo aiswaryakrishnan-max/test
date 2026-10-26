@@ -26,7 +26,7 @@ which works better than an occasional training marathon.
 | 💼 **CRM sync** | Read-only sync of Salesforce opportunities or HubSpot deals, matched to reps by email. Managers see **win rate and pipeline next to readiness**. Reps get coaching for the stage their deals are in (Negotiation → pricing objections). |
 | 📅 **Calendar connect** | Each rep links Google Calendar (read-only). Upcoming **customer meetings** appear on Today with the matching CRM deal and a one-click **rehearsal role-play of that meeting**. |
 | 💬 **Google Chat** | The Daily Challenge arrives as an **interactive card in a Chat DM** every morning. Reps tap A/B/C/D, get instant feedback, and their XP and streak update in the app. Commands: `challenge`, `streak`, `leaderboard`, `help`. |
-| 📚 **Weekly GTM digest** | Every Monday, 3-5 **under-a-minute lessons** from the week's **Gong** calls, new **Google Drive** enablement docs and **web** news, posted to your team's **Google Chat** space. Each lesson has a "Try this" action. Two quiz questions (answers hidden until tapped) **join the Daily Challenge**, so spaced repetition brings them back. The next digest opens with a recap of the last one. |
+| 📚 **Daily GTM digest** | One **two-minute card a day, Mon to Fri at 8:30 in each rep's time zone**, in a Google Chat DM. Fixed day themes: *Speak the language*, *Know the buyer*, *Win the room*, *See it in use*, *Learn from the field*. Every card ends with a **"Say it on your next call"** line and a quiz, and questions come back **after 1 and 4 weeks**. Built only from approved sources (Drive "Approved" library, Gong, Salesforce, a short list of websites). Claude drafts, validators check every fact, and a human approves before anything goes out. |
 | 🎭 **AI role-plays** | A live practice call where **Claude plays the buyer** (friendly, skeptical or tough), by text or **voice** (speech-to-text in, spoken buyer replies out). Ends with a **scorecard**: 5 skill scores, talk ratio, best moment and a better line to use. |
 
 ### For managers
@@ -133,40 +133,64 @@ PitchPulse requests read-only event access (`calendar.events.readonly`). It stor
 
 Every request from Google is verified (signed JWT, issuer and audience) before it's processed.
 
-### 📚 Weekly GTM digest
-Turns the week's raw material into a short Chat card the GTM team can read in about 3 minutes, and keeps the lessons coming back afterwards.
+### 📚 Daily GTM digest
+A bot sends each rep one short, visual card every weekday. It has three jobs: **micro learning** (one idea a day), **retention** (reps recall it, not just read it) and **usable content** (every card ends with something to say on a call).
 
-**How it works**
-1. **Collect** (last `DIGEST_LOOKBACK_DAYS`, default 7): external **Gong** calls with Gong's AI brief, key points, highlights and trackers (the 25 longest by default); files added or changed in your enablement **Drive** folders (Docs, Slides and Sheets are read as text); **web** news on your topics, found by Claude's web search.
-2. **Compose**: Claude picks 3-5 "snacks" (call clip, win story, objection, competitor, product, market, playbook). Each has a takeaway of 45 words or fewer, one "Try this" action, and links to its sources. It also writes 2 recall questions. Links come from the source data, never from the model. Without `ANTHROPIC_API_KEY` you get a plain digest built from Gong briefs and Drive titles.
-3. **Deliver**: posted to Google Chat. Quiz answers stay collapsed until someone taps. The questions are added to the Daily Challenge pool under the topic *Weekly Digest*, and its accuracy shows up in the managers' **Focus areas**.
-4. **Retain**: the next week's digest opens with "Remember last week?"
+**The week**
 
-If one source fails (for example an expired Gong key), the digest is still built from the others and the failure is shown under **Integrations**.
+| Day | Theme | Pillars | Visual |
+|---|---|---|---|
+| Mon | Speak the language | Industry terms (5, each with an "in a call" line), market and congress news, event calendar, regulatory context | Annotated chart |
+| Tue | Know the buyer | Persona (rotates weekly), pain points, 4 discovery questions with "listen for" and "our answer", customer language from Gong | Workflow with friction points |
+| Wed | Win the room | Objection in four moves (acknowledge, reframe, prove, ask), competitors as discovery questions, packaging | Layer diagram |
+| Thu | See it in use | Use case (trigger, buyer, flow, outcome), what shipped | Flow |
+| Fri | Learn from the field | Anonymized win/loss stories, approved proof points, clip of the week, 3-question recap | Stat tiles |
+
+Personas, competitors and use cases rotate weekly (`DIGEST_PERSONAS`, `DIGEST_COMPETITORS`, `DIGEST_USE_CASES`, semicolon-separated; Prezent's lists are the defaults). If a competitor or objection tracker in Gong rises week over week, it replaces the rotation for that week.
+
+**The pipeline** (runs by itself; every step can also be run from the **Daily digest** screen or the CLI)
+
+| When | What happens |
+|---|---|
+| Wednesday | Plan next week: rotations plus Gong tracker trends. The enablement lead edits the plan (Monday focus, persona, objection, competitor, use case, notes). |
+| Thursday | Claude drafts all five days from the approved sources, in a fixed JSON format per day. Validators run, and a card that fails goes back to Claude once with the findings. Managers and admins are notified. |
+| Friday | Reviewers approve, edit, reject or regenerate each card, and can send a test to their own Chat. A card with validator errors can't be approved. |
+| Sunday 8 pm | Approved cards are queued. Any day that isn't approved gets a short **refresher** card from an earlier week instead. |
+| Mon to Fri | Each rep gets that day's card at `DIGEST_SEND_TIME` (default 08:30) in their own time zone, which the app picks up from their browser. |
+
+**Rules the validators enforce** (guide §6): headline ≤ 12 words, body ≤ 120 words, "say it" ≤ 30 words, 1 quiz question (3 on Friday). Every fact cites a known source id. Customer numbers must appear word for word in an approved case study. Competitor content must be a question, and a stated strength needs an approved battle card. No customer account from the CRM may be named unless it's an approved reference (`DIGEST_REFERENCE_CUSTOMERS`, or named in an approved case study), and never in an image. Wednesday and Friday cards always need a human. Set `DIGEST_APPROVAL=sensitive` after the pilot to auto-approve clean cards on the other days.
+
+**In Chat:** rendered visual, headline, 2-3 lines, the "say it" line, the quiz as buttons, a collapsed **Recall** section (the same weekday's question from 1 and 4 weeks ago), and buttons for **Open full card**, **Open battle card** (Wed), **Watch clip** (Fri) and **Useful / Not useful**. Monday's card carries the **weekly challenge**: reps reply in the card's thread, or start a message with `challenge:`, with what the customer said (+20 XP).
+
+**Full card:** `APP_URL/digest/<week>` is the whole week as a web page, with color-coded day tabs, interactive quizzes, the Friday recap score and sources under every day. Reviewers add `?preview=1` to see drafts and validator findings.
+
+**Metrics** (Daily digest screen): per day, cards sent, reps engaged, full-card views, quiz completion and score, and useful/not useful. Also recall scores the first time, after 1 week and after 4 weeks, and challenge replies with the share of reps replying.
 
 **Setup**
 
-| Env var | Example / purpose |
+| Env var | Purpose |
 |---|---|
-| `GOOGLE_CHAT_DIGEST_WEBHOOK` | In the GTM Chat space: *Apps & integrations → Webhooks → Add*. Paste the URL here. This is the simplest option. |
-| `GOOGLE_CHAT_DIGEST_SPACE` | Or `spaces/AAAA…`: posted by the PitchPulse Chat app (add the app to the space; uses `GOOGLE_CHAT_SERVICE_ACCOUNT`) |
-| `GONG_ACCESS_KEY` / `GONG_ACCESS_KEY_SECRET` | Gong → *Company settings → Ecosystem → API → Create*. Needs the `api:calls:read:extensive` scope. |
-| `GONG_API_BASE` | Your Gong API base URL if it is customer-specific (e.g. `https://us-12345.api.gong.io`) |
-| `GONG_WORKSPACE_ID`, `GONG_MAX_CALLS` | Optional: limit to one workspace; calls per digest (default 25) |
-| `GOOGLE_DRIVE_FOLDER_IDS` | Comma-separated folder ids (the part after `/folders/` in the URL). **Share each folder (Viewer) with the service account's email.** |
-| `GOOGLE_DRIVE_SERVICE_ACCOUNT` | JSON key or path. Defaults to `GOOGLE_CHAT_SERVICE_ACCOUNT`. Enable the **Google Drive API** in the same Cloud project. |
-| `DIGEST_WEB_TOPICS` | Semicolon-separated, e.g. `Competitor X pricing; AI in sales enablement; logistics industry news`. Needs `ANTHROPIC_API_KEY`. |
-| `DIGEST_WEB_DOMAINS` | Optional comma-separated allow-list of news sites |
-| `DIGEST_DAY`, `DIGEST_HOUR` | `1` = Monday … `7` = Sunday (default `1`), and the local hour (default `9`). If the server is down at that time, the digest goes out as soon as it's back up that week. |
-| `DIGEST_AUDIENCE` | Who it's written for (default: AEs, SDRs, CSMs and sales engineers) |
+| `GOOGLE_CHAT_AUDIENCE`, `GOOGLE_CHAT_SERVICE_ACCOUNT` | The PitchPulse Chat app (see Google Chat above) delivers the cards as DMs, so quiz buttons work. Each rep says hi to the app once. |
+| `GOOGLE_DRIVE_APPROVED_FOLDER_ID` | The **Approved** folder. Subfolder names set the category: *Glossary*, *Congress calendar*, *Compliance*, *Personas*, *Battle cards*, *Packaging*, *Use cases*, *Release notes*, *Case studies*. Each file needs an owner and `Last reviewed: YYYY-MM-DD` in its description (or a `lastReviewed` property). Files without one, or older than `DIGEST_SOURCE_MAX_AGE_DAYS` (180), are skipped and listed in the run log. Share the folder with the service account (`GOOGLE_DRIVE_SERVICE_ACCOUNT`, defaults to the Chat one) and enable the Drive API. |
+| `GONG_ACCESS_KEY`, `GONG_ACCESS_KEY_SECRET`, `GONG_API_BASE` | Calls, briefs, highlights and tracker counts. Create trackers for each competitor, "Agency", "MLR", "Budget" and "Security" (`GONG_OBJECTION_TRACKERS`, `GONG_COMPETITOR_TRACKERS` to rename). |
+| `CRM_WON_REASON_FIELD`, `CRM_LOST_REASON_FIELD`, `CRM_COMPETITOR_FIELD`, `CRM_SEGMENT_FIELD`, `CRM_USE_CASE_FIELD` | API names of your deal fields (HubSpot's reason fields are the default). Friday shows segment and deal size band, never the account. With fewer than `DIGEST_MIN_CLOSED_DEALS` (3) closed deals in the week, it groups the last 4 weeks by segment. |
+| `DIGEST_WEB_DOMAINS` | Human-picked news sites for Claude's web search (e.g. `esmo.org,fiercepharma.com`) |
+| `DIGEST_WEB_PAGES` | Pages read every week, e.g. `https://www.prezent.ai/updates-bio` |
+| `ANTHROPIC_API_KEY` | Claude drafts the cards (`COACH_MODEL`, default `claude-opus-5-5`) |
+| `DIGEST_TITLE` | e.g. `Prezent GTM weekly digest` |
+| `DIGEST_PILOT_EMAILS` | Comma-separated reps for the pilot; empty = everyone linked in Chat |
+| `DIGEST_SEND_TIME`, `DIGEST_APPROVAL` | `08:30`; `all` (pilot) or `sensitive` |
+| `GOOGLE_CHAT_DIGEST_WEBHOOK` | Optional: also post each day's card (links only) to a team space, one thread per week |
+| `DIGEST_RENDER_IMAGES`, `DIGEST_CHROMIUM_PATH` | Visuals are rendered to PNG with `playwright-core` (an optional dependency) and a local Chromium. Chat fetches images from a public https `APP_URL`; the image URLs are signed, and visuals never contain customer names. |
 
-Admins can click **Preview this week** under **Integrations** to see the draft. **Send now** then posts that exact version. The scheduled send also uses a reviewed draft if one exists. A week is never sent twice by accident; to send again, confirm the re-send prompt or run with `--force`.
+Managers nominate the **clip of the week** (a Gong link, why it works, the skill it shows) on the Daily digest screen, and only manager-approved clips are used. Confirm that call-recording consent covers internal training use first.
 
-You can also run it without the web server, e.g. from cron or Cloud Scheduler:
 ```bash
-npm run digest -- --dry-run     # build and print this week's draft; posts nothing
-npm run digest                  # post this week's digest (skips if already sent)
-npm run digest -- --force       # post again
+npm run digest -- plan                    # Wednesday step for next week
+npm run digest -- draft [--day tue]       # Thursday step (or regenerate one day)
+npm run digest -- preview --out week.html # the full web card, drafts included
+npm run digest -- queue                   # Sunday step
+npm run digest -- deliver                 # send what's due now
 ```
 
 ### 🎭 AI role-plays
@@ -180,7 +204,7 @@ publish content through **Content Studio** in the app.
 
 ## Architecture
 
-No build step and one runtime dependency (`@anthropic-ai/sdk`). Every integration is plain `fetch` + `node:crypto`.
+No build step and one runtime dependency (`@anthropic-ai/sdk`), plus optional `playwright-core` for digest images. Every integration is plain `fetch` + `node:crypto`.
 
 ```
 server/
@@ -195,12 +219,19 @@ server/
     crm.js        Salesforce + HubSpot adapters, sync, win-rate and deal-stage insights
     calendar.js   Google Calendar OAuth, encrypted refresh tokens, meeting ↔ deal matching
     googlechat.js Google Chat app: verified events, interactive cards, morning DMs via service account
-    digest.js     Weekly GTM digest: Gong + Drive + web search → Claude → Chat card + Daily Challenge questions
     google.js     Google service-account tokens (Chat, Drive)
+  digest/         Daily GTM digest
+    index.js      Pipeline (plan, draft, review, queue, deliver), metrics, scheduler, routes
+    sources.js    Gong, Approved Drive library, Salesforce win/loss, web research, approved clips
+    plan.js       Weekly rotations and Gong tracker trends
+    compose.js    Fixed per-day JSON formats and the Claude drafting prompt
+    validate.js   Source, length, proof-figure, competitor and customer-name rules
+    visuals.js    Chart, workflow, layer and flow visuals (SVG, rendered to PNG for Chat)
+    page.js       The full web card;  chat.js  the Chat card, quiz, recall, feedback, challenge replies
     jwt.js        RS256 JWT verify/sign (JWKS + x509), no dependencies
     oauth.js      OAuth state + PKCE helpers;  secrets.js  AES-256-GCM token encryption
   reminders.js    Daily streak reminders, manager digests, Slack webhook
-  digest-cli.js   `npm run digest`: run the weekly digest once (cron / CI)
+  digest-cli.js   `npm run digest -- plan|draft|preview|queue|deliver` (cron / CI)
   db.js           SQLite schema (node:sqlite)
   auth.js         scrypt password hashing, cookie sessions
   seed.js         Demo content, users and 3 weeks of activity history

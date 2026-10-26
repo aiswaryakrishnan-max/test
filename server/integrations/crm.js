@@ -7,6 +7,22 @@ import { addDays, dayOf, daysBetween, readiness } from '../engagement.js';
 import { config } from './config.js';
 import { tokenRequest } from './oauth.js';
 
+const FIELD_NAME = /^[A-Za-z][\w.]*$/;
+/** Configured win/loss field names that are safe to put in a query. */
+function extraFields(cfg) {
+  return Object.fromEntries(Object.entries(cfg.fields || {}).filter(([, f]) => f && FIELD_NAME.test(f)));
+}
+const pick = (obj, path) => path?.split('.').reduce((o, k) => (o == null ? o : o[k]), obj) ?? null;
+const text = (v) => (v == null || v === '' ? null : String(v));
+function winLoss(record, fields, isWon) {
+  return {
+    reason: text(pick(record, isWon ? fields.wonReason : fields.lostReason)),
+    competitor: text(pick(record, fields.competitor)),
+    segment: text(pick(record, fields.segment)),
+    useCase: text(pick(record, fields.useCase)),
+  };
+}
+
 async function getJson(url, headers) {
   const res = await fetch(url, { headers: { Accept: 'application/json', ...headers } });
   const data = await res.json().catch(() => ({}));
@@ -39,7 +55,8 @@ export async function fetchHubspotDeals(cfg) {
     }
   }
 
-  const props = 'dealname,amount,dealstage,closedate,hubspot_owner_id,hs_is_closed_won';
+  const fields = extraFields(cfg);
+  const props = ['dealname', 'amount', 'dealstage', 'closedate', 'hubspot_owner_id', 'hs_is_closed_won', ...new Set(Object.values(fields))].join(',');
   const deals = [];
   for (let after = ''; ;) {
     const page = await getJson(`${base}/crm/v3/objects/deals?limit=100&archived=false&properties=${props}${after ? `&after=${after}` : ''}`, auth);
@@ -57,6 +74,7 @@ export async function fetchHubspotDeals(cfg) {
         closeDate: p.closedate ? String(p.closedate).slice(0, 10) : null,
         isClosed: stage.isClosed || isWon,
         isWon,
+        ...winLoss(p, fields, isWon),
       });
     }
     after = page.paging?.next?.after;
@@ -77,7 +95,9 @@ export async function fetchSalesforceDeals(cfg) {
   });
   const instance = token.instance_url || cfg.salesforceDomain;
   const auth = { Authorization: `Bearer ${token.access_token}` };
-  const soql = `SELECT Id, Name, Amount, StageName, CloseDate, IsClosed, IsWon, Owner.Email, Account.Name
+  const fields = extraFields(cfg);
+  const extra = [...new Set(Object.values(fields))].map((f) => `, ${f}`).join('');
+  const soql = `SELECT Id, Name, Amount, StageName, CloseDate, IsClosed, IsWon, Owner.Email, Account.Name${extra}
     FROM Opportunity WHERE LastModifiedDate = LAST_N_DAYS:365`.replace(/\s+/g, ' ');
 
   const deals = [];
@@ -95,6 +115,7 @@ export async function fetchSalesforceDeals(cfg) {
         closeDate: r.CloseDate,
         isClosed: !!r.IsClosed,
         isWon: !!r.IsWon,
+        ...winLoss(r, fields, !!r.IsWon),
       });
     }
     next = page.done ? null : page.nextRecordsUrl;
@@ -118,16 +139,19 @@ export async function syncCrm(db, cfg = config.crm()) {
     let linked = 0;
     tx(db, () => {
       const upsert = db.prepare(`
-        INSERT INTO crm_deals (provider, external_id, user_id, owner_email, name, account, amount, stage, close_date, is_closed, is_won, synced_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        INSERT INTO crm_deals (provider, external_id, user_id, owner_email, name, account, amount, stage, close_date, is_closed, is_won,
+          reason, competitor, segment, use_case, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         ON CONFLICT (provider, external_id) DO UPDATE SET
           user_id = excluded.user_id, owner_email = excluded.owner_email, name = excluded.name, account = excluded.account,
           amount = excluded.amount, stage = excluded.stage, close_date = excluded.close_date,
-          is_closed = excluded.is_closed, is_won = excluded.is_won, synced_at = excluded.synced_at`);
+          is_closed = excluded.is_closed, is_won = excluded.is_won, reason = excluded.reason, competitor = excluded.competitor,
+          segment = excluded.segment, use_case = excluded.use_case, synced_at = excluded.synced_at`);
       for (const d of deals) {
         const userId = d.ownerEmail ? users.get(d.ownerEmail) ?? null : null;
         if (userId) linked++;
-        upsert.run(cfg.provider, d.externalId, userId, d.ownerEmail, d.name, d.account, d.amount, d.stage, d.closeDate, d.isClosed ? 1 : 0, d.isWon ? 1 : 0);
+        upsert.run(cfg.provider, d.externalId, userId, d.ownerEmail, d.name, d.account, d.amount, d.stage, d.closeDate, d.isClosed ? 1 : 0, d.isWon ? 1 : 0,
+          d.reason ?? null, d.competitor ?? null, d.segment ?? null, d.useCase ?? null);
       }
     });
     const detail = `Synced ${deals.length} deals from ${cfg.provider} (${linked} linked to PitchPulse users)`;

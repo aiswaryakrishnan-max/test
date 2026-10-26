@@ -4,7 +4,9 @@
   "description": "Daily sales readiness & enablement platform: daily challenges, streaks, learning paths, AI pitch coaching, leaderboards and manager insights.",
   "type": "module",
   "private": true,
-  "engines": { "node": ">=22.5" },
+  "engines": {
+    "node": ">=22.5"
+  },
   "scripts": {
     "start": "node --no-warnings server/index.js",
     "dev": "node --no-warnings --watch server/index.js",
@@ -14,5 +16,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0"
+  },
+  "optionalDependencies": {
+    "playwright-core": "~1.56.1"
   }
 }
