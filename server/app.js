@@ -468,6 +468,13 @@ export function createApp(db, opts = {}) {
         connectedUsers: count('SELECT COUNT(*) AS n FROM calendar_connections'), lastError: lastRun('calendar_sync') },
       googleChat: { enabled: chat.enabled, canSend: !!(chat.enabled && chat.serviceAccount), hour: chat.hour,
         endpoint: `${config.appUrl()}/integrations/google-chat`, linkedUsers: count('SELECT COUNT(*) AS n FROM chat_links'), lastRun: lastRun('chat_challenge') },
+      digest: (() => {
+        const d = config.digest();
+        return { canDeliver: chat.enabled && !!chat.serviceAccount, mirror: !!d.webhookUrl, sendTime: d.sendTime, approval: d.approval,
+          pilot: d.pilotEmails.length, gong: d.gong.enabled, drive: d.drive.enabled, web: d.web.enabled, ai: aiEnabled(),
+          crmReasons: !!(config.crm().fields.wonReason || config.crm().fields.lostReason),
+          lastRuns: ['digest_plan', 'digest_draft', 'digest_queue', 'digest_send'].map(lastRun).filter(Boolean) };
+      })(),
       ai: { enabled: aiEnabled() },
     };
   });
@@ -479,7 +486,7 @@ export function createApp(db, opts = {}) {
   return async function handler(req, res) {
     const url = new URL(req.url, 'http://localhost');
     try {
-      const isRoute = /^\/(api|auth|integrations)\//.test(url.pathname);
+      const isRoute = /^\/(api|auth|integrations|digest)\//.test(url.pathname);
       if (!isRoute) return await serveStatic(url.pathname, res);
 
       const match = routes.find((r) => r.method === req.method && r.re.test(url.pathname));

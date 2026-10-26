@@ -26,7 +26,7 @@ export function createSession(db, userId) {
 export function userForToken(db, token) {
   if (!token) return null;
   const row = db.prepare(`
-    SELECT u.id, u.email, u.name, u.role, u.team_id, u.daily_goal_xp, s.expires_at
+    SELECT u.id, u.email, u.name, u.role, u.team_id, u.daily_goal_xp, u.timezone, s.expires_at
     FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?`).get(token);
   if (!row) return null;
   if (row.expires_at < new Date().toISOString()) {

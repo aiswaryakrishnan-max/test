@@ -185,7 +185,7 @@ CREATE TABLE IF NOT EXISTS crm_deals (
 
 CREATE TABLE IF NOT EXISTS integration_runs (
   id INTEGER PRIMARY KEY,
-  kind TEXT NOT NULL,             -- 'crm_sync' | 'chat_challenge' | 'calendar_sync'
+  kind TEXT NOT NULL,             -- 'crm_sync' | 'chat_challenge' | 'calendar_sync' | 'digest_*'
   status TEXT NOT NULL,           -- 'ok' | 'error'
   detail TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -240,7 +240,93 @@ CREATE TABLE IF NOT EXISTS roleplays (
   ended_at TEXT
 );
 
+-- ---------- Daily GTM digest ----------
+CREATE TABLE IF NOT EXISTS digest_weeks (
+  id INTEGER PRIMARY KEY,
+  week TEXT NOT NULL UNIQUE,      -- Monday of the delivery week
+  plan TEXT NOT NULL,             -- JSON topic plan (persona, competitor, use case, objection, focus, candidates)
+  sources TEXT NOT NULL DEFAULT '{}', -- JSON source catalog {id: {type, title, url, ref, category}}
+  challenge TEXT,                 -- the week's "use it on a call" challenge
+  status TEXT NOT NULL DEFAULT 'planned', -- 'planned' | 'drafted' | 'queued'
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS digest_cards (
+  id INTEGER PRIMARY KEY,
+  week_id INTEGER NOT NULL REFERENCES digest_weeks(id) ON DELETE CASCADE,
+  day TEXT NOT NULL,              -- 'mon' .. 'fri'
+  status TEXT NOT NULL,           -- 'draft' | 'approved' | 'rejected' | 'queued' | 'fallback'
+  content TEXT NOT NULL,          -- JSON card (fixed format per day)
+  issues TEXT NOT NULL DEFAULT '[]', -- JSON validator findings [{level, path, message}]
+  sensitive INTEGER NOT NULL DEFAULT 0, -- names a competitor or carries win/loss data: always human-approved
+  approved_by INTEGER REFERENCES users(id),
+  approved_at TEXT,
+  image BLOB,                     -- rendered visual (PNG), optional
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (week_id, day)
+);
+
+CREATE TABLE IF NOT EXISTS digest_deliveries (
+  card_id INTEGER NOT NULL REFERENCES digest_cards(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  message_name TEXT,
+  thread_name TEXT,               -- Chat thread; replies in it count as challenge replies
+  sent_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (card_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS digest_answers (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  card_id INTEGER NOT NULL REFERENCES digest_cards(id) ON DELETE CASCADE,    -- card the question was shown on
+  source_card_id INTEGER NOT NULL REFERENCES digest_cards(id) ON DELETE CASCADE, -- card the question came from
+  question_index INTEGER NOT NULL,
+  interval TEXT NOT NULL,         -- 'same' | '1w' | '4w'
+  choice INTEGER NOT NULL,
+  correct INTEGER NOT NULL,
+  answered_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, card_id, source_card_id, question_index)
+);
+
+CREATE TABLE IF NOT EXISTS digest_feedback (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  card_id INTEGER NOT NULL REFERENCES digest_cards(id) ON DELETE CASCADE,
+  useful INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, card_id)
+);
+
+CREATE TABLE IF NOT EXISTS digest_events (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  card_id INTEGER REFERENCES digest_cards(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,             -- 'view' (full card opened) | 'click'
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS digest_challenge_replies (
+  id INTEGER PRIMARY KEY,
+  week_id INTEGER NOT NULL REFERENCES digest_weeks(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  text TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS digest_clips (
+  id INTEGER PRIMARY KEY,
+  url TEXT NOT NULL,              -- Gong call or clip link
+  title TEXT NOT NULL,
+  why_it_works TEXT NOT NULL,
+  skill TEXT NOT NULL,            -- scorecard skill it demonstrates
+  nominated_by INTEGER NOT NULL REFERENCES users(id),
+  approved_by INTEGER REFERENCES users(id),
+  used_week_id INTEGER REFERENCES digest_weeks(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_deals_user ON crm_deals(user_id);
+CREATE INDEX IF NOT EXISTS idx_digest_answers_source ON digest_answers(source_card_id);
+CREATE INDEX IF NOT EXISTS idx_digest_events_card ON digest_events(card_id, kind);
 CREATE INDEX IF NOT EXISTS idx_events_user_start ON calendar_events(user_id, start_at);
 CREATE INDEX IF NOT EXISTS idx_roleplays_user ON roleplays(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_xp_user_day ON xp_events(user_id, day);
@@ -265,6 +351,12 @@ function migrate(db) {
   };
   addColumn('users', 'sso_subject', 'sso_subject TEXT');           // OIDC "sub" claim
   addColumn('users', 'last_login_at', 'last_login_at TEXT');
+  addColumn('users', 'timezone', 'timezone TEXT');                 // IANA zone for the 8:30 digest
+  // Win/loss fields for the Friday digest (mapped from CRM fields in config)
+  addColumn('crm_deals', 'reason', 'reason TEXT');
+  addColumn('crm_deals', 'competitor', 'competitor TEXT');
+  addColumn('crm_deals', 'segment', 'segment TEXT');
+  addColumn('crm_deals', 'use_case', 'use_case TEXT');
 }
 
 /** Run fn inside a transaction; rolls back on throw. */

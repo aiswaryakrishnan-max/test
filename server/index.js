@@ -5,6 +5,7 @@ import { scheduleReminders } from './reminders.js';
 import { extensions } from './extensions.js';
 import { scheduleCrmSync } from './integrations/crm.js';
 import { scheduleChatChallenges } from './integrations/googlechat.js';
+import { scheduleDigest } from './digest/index.js';
 import { DEMO_PASSWORD, seed } from './seed.js';
 
 const db = openDb();
@@ -15,6 +16,7 @@ if (db.prepare('SELECT COUNT(*) AS n FROM users').get().n === 0) {
 scheduleReminders(db);
 scheduleCrmSync(db);
 scheduleChatChallenges(db);
+scheduleDigest(db);
 
 const port = Number(process.env.PORT || 3000);
 createServer(createApp(db, { extensions })).listen(port, () => {

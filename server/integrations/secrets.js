@@ -1,6 +1,6 @@
 // Encrypts stored OAuth refresh tokens at rest (AES-256-GCM).
 // Set APP_SECRET in production; otherwise a random key is generated next to the database.
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -32,4 +32,9 @@ export function decrypt(packed) {
   const decipher = createDecipheriv('aes-256-gcm', getKey(), iv);
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
+}
+
+/** Short HMAC for signed, unguessable URLs (e.g. public card images). */
+export function sign(text) {
+  return createHmac('sha256', getKey()).update(String(text)).digest('base64url').slice(0, 32);
 }
